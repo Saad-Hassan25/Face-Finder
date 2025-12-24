@@ -1,6 +1,8 @@
 # Face-Finder
 Face Finder is a face recognition system designed to help users **find themselves (or any person) across a collection of photos**. Think of it like Google Photos or Apple Photos' "Find My Face" feature.
 
+# Face Finder - Architecture & Application Flow
+
 ## Table of Contents
 1. [Overview](#overview)
 2. [Primary Use Case: Find Me In Photos](#primary-use-case-find-me-in-photos)
@@ -19,9 +21,11 @@ Face Finder is a face recognition system designed to help users **find themselve
 
 ### Primary Features
 - **Image Gallery Indexing**: Upload multiple images to build a searchable gallery
+- **Local Folder Indexing**: Index images directly from a local folder path
 - **Person Search**: Find all images where a specific person appears
 - **Face Detection**: Locate faces in images
 - **Face Verification**: Compare two faces for identity match
+- **Real-time Progress**: SSE-based progress updates for large indexing operations
 
 ### Technology Stack
 
@@ -32,6 +36,8 @@ Face Finder is a face recognition system designed to help users **find themselve
 | Vector Database | Qdrant | Store and search face embeddings |
 | API Framework | FastAPI | REST API endpoints |
 | Runtime | ONNX Runtime | Model inference engine |
+| Frontend | React + Vite + TypeScript | Web interface |
+| Styling | Tailwind CSS | UI styling |
 
 ---
 
@@ -121,17 +127,20 @@ You have a collection of photos (from an event, party, wedding, etc.) and want t
 ### Example Workflow
 
 ```python
-# Step 1: Index all event photos
+# Step 1a: Index all event photos (via file upload)
 POST /gallery/index-bulk
 Files: [event_photo_001.jpg, event_photo_002.jpg, ..., event_photo_100.jpg]
 
-# Response:
-{
-    "success": true,
-    "total_images": 100,
-    "total_faces_indexed": 287,  # 287 faces found across 100 images
-    "images_processed": [...]
-}
+# OR Step 1b: Index a local folder (with real-time progress)
+POST /gallery/index-folder-stream
+Body: {"folder_path": "D:\\Photos\\Event2024", "recursive": true}
+
+# Response (streamed via SSE):
+# data: {"type": "start", "total": 500, "message": "Starting..."}
+# data: {"type": "progress", "current": 1, "total": 500, "percent": 0.2, "current_image": "photo1.jpg"}
+# data: {"type": "progress", "current": 2, "total": 500, "percent": 0.4, "current_image": "photo2.jpg"}
+# ...
+# data: {"type": "complete", "success": true, "total_images": 500, "total_faces_indexed": 1287}
 
 # Step 2: Find a specific person
 POST /gallery/find-person
@@ -142,12 +151,15 @@ File: johns_selfie.jpg  # Reference photo of John
     "success": true,
     "total_images_found": 15,
     "images": [
-        {"image_id": "uuid-1", "image_name": "event_photo_007.jpg", "similarity": 0.92},
-        {"image_id": "uuid-2", "image_name": "event_photo_023.jpg", "similarity": 0.88},
-        {"image_id": "uuid-3", "image_name": "event_photo_041.jpg", "similarity": 0.85},
+        {"image_id": "uuid-1", "image_name": "event_photo_007.jpg", "file_path": "D:\\Photos\\Event2024\\event_photo_007.jpg", "similarity": 0.92},
+        {"image_id": "uuid-2", "image_name": "event_photo_023.jpg", "file_path": "D:\\Photos\\Event2024\\event_photo_023.jpg", "similarity": 0.88},
         ...
     ]
 }
+
+# Step 3: View the actual image
+GET /images?path=D:\Photos\Event2024\event_photo_007.jpg
+# Returns: Image file served directly from disk
 ```
 
 ---
@@ -155,23 +167,38 @@ File: johns_selfie.jpg  # Reference photo of John
 ## Functional Requirements
 
 ### FR-1: Image Gallery Indexing (Primary)
-- **Input**: One or more image files
+- **Input**: One or more image files OR a local folder path
 - **Output**: Confirmation with image_id and face count
 - **Process**:
-  - Accept image upload(s)
+  - Accept image upload(s) or folder path
   - Detect all faces in each image using SCRFD
   - Extract embeddings for each face using LVFace
-  - Store embeddings in Qdrant with image metadata
-- **Endpoints**: `POST /gallery/index`, `POST /gallery/index-bulk`
+  - Store embeddings in Qdrant with image metadata (including file_path for local images)
+- **Endpoints**: `POST /gallery/index`, `POST /gallery/index-bulk`, `POST /gallery/index-folder`, `POST /gallery/index-folder-stream`
+
+### FR-1b: Local Folder Indexing
+- **Input**: Folder path, optional recursive flag, file extensions
+- **Output**: Real-time progress updates via SSE, final summary
+- **Process**:
+  - Scan folder for image files (jpg, jpeg, png, webp, bmp)
+  - Process each image with progress streaming
+  - Store file_path in Qdrant for later image serving
+- **Endpoints**: `POST /gallery/index-folder`, `POST /gallery/index-folder-stream`
+
+### FR-1c: Image Serving
+- **Input**: Absolute file path
+- **Output**: Image file served from disk
+- **Security**: Validates file exists, validates image extension
+- **Endpoint**: `GET /images`
 
 ### FR-2: Find Person In Images (Primary)
 - **Input**: Reference image of the person to find
-- **Output**: List of images where the person appears
+- **Output**: List of images where the person appears (with file_path for display)
 - **Process**:
   - Detect face(s) in reference image
   - Extract embedding(s)
   - Search Qdrant for similar face vectors
-  - Return deduplicated list of matching images
+  - Return deduplicated list of matching images with file paths
 - **Endpoint**: `POST /gallery/find-person`
 
 ### FR-3: Face Detection
@@ -225,31 +252,47 @@ File: johns_selfie.jpg  # Reference photo of John
 ## System Components
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                        FastAPI Server                            │
-│                         (main.py)                                │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────┐  │
-│  │   /detect    │  │   /embed     │  │   /register          │  │
-│  │   /search    │  │   /verify    │  │   /person/{id}       │  │
-│  └──────┬───────┘  └──────┬───────┘  └──────────┬───────────┘  │
-│         │                 │                      │              │
-├─────────┴─────────────────┴──────────────────────┴──────────────┤
-│                      Service Layer                               │
-│  ┌────────────────┐ ┌────────────────┐ ┌────────────────────┐   │
-│  │ FaceDetection  │ │ FaceEmbedding  │ │   QdrantService    │   │
-│  │    Service     │ │    Service     │ │                    │   │
-│  │   (SCRFD)      │ │   (LVFace)     │ │   (Vector DB)      │   │
-│  └────────┬───────┘ └────────┬───────┘ └─────────┬──────────┘   │
-│           │                  │                    │              │
-├───────────┴──────────────────┴────────────────────┴──────────────┤
-│                      Model/Storage Layer                         │
-│  ┌────────────────┐ ┌────────────────┐ ┌────────────────────┐   │
-│  │  scrfd.onnx    │ │  lvface.onnx   │ │   Qdrant Server    │   │
-│  │  (Detection)   │ │  (Embedding)   │ │   (Port 6333)      │   │
-│  └────────────────┘ └────────────────┘ └────────────────────┘   │
-└─────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           FRONTEND (React + Vite)                            │
+│                              localhost:5173                                  │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  ┌────────────┐  ┌────────────┐  ┌────────────┐  ┌────────────┐            │
+│  │  Upload    │  │  Search    │  │  Gallery   │  │  Settings  │            │
+│  │  Page      │  │  Page      │  │  Page      │  │  Page      │            │
+│  │            │  │            │  │            │  │            │            │
+│  │ - Drag&Drop│  │ - Find     │  │ - Stats    │  │ - Health   │            │
+│  │ - Folder   │  │   Person   │  │ - Browse   │  │ - Clear    │            │
+│  │   Path     │  │ - Results  │  │            │  │            │            │
+│  └────────────┘  └────────────┘  └────────────┘  └────────────┘            │
+│                            │                                                │
+│                            │ HTTP/SSE                                       │
+│                            ▼                                                │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                        FastAPI Server                                        │
+│                         localhost:8000                                       │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────────────────┐  │
+│  │ /gallery/*   │  │  /detect     │  │  /images                         │  │
+│  │ /search      │  │  /embed      │  │  (serve local files)             │  │
+│  │ /verify      │  │  /register   │  │                                  │  │
+│  └──────┬───────┘  └──────┬───────┘  └──────────────────────────────────┘  │
+│         │                 │                                                  │
+├─────────┴─────────────────┴──────────────────────────────────────────────────┤
+│                      Service Layer                                           │
+│  ┌────────────────┐ ┌────────────────┐ ┌────────────────────┐               │
+│  │ FaceDetection  │ │ FaceEmbedding  │ │   QdrantService    │               │
+│  │    Service     │ │    Service     │ │                    │               │
+│  │   (SCRFD)      │ │   (LVFace)     │ │   (Vector DB)      │               │
+│  └────────┬───────┘ └────────┬───────┘ └─────────┬──────────┘               │
+│           │                  │                    │                          │
+├───────────┴──────────────────┴────────────────────┴──────────────────────────┤
+│                      Model/Storage Layer                                     │
+│  ┌────────────────┐ ┌────────────────┐ ┌────────────────────┐               │
+│  │  scrfd.onnx    │ │  lvface.onnx   │ │   Qdrant Server    │               │
+│  │  (Detection)   │ │  (Embedding)   │ │   (Port 6333)      │               │
+│  └────────────────┘ └────────────────┘ └────────────────────┘               │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -292,12 +335,102 @@ File: johns_selfie.jpg  # Reference photo of John
     │  ┌────────────────────────────────────────────────────────────────┐ │
     │  │  287 face vectors stored from 100 images                        │ │
     │  │                                                                  │ │
-    │  │  Vector 1: [0.12, -0.45, ...] → {image_id: "img001", face: 0}  │ │
-    │  │  Vector 2: [0.08, -0.32, ...] → {image_id: "img001", face: 1}  │ │
-    │  │  Vector 3: [-0.15, 0.28, ...] → {image_id: "img001", face: 2}  │ │
-    │  │  Vector 4: [0.22, -0.18, ...] → {image_id: "img002", face: 0}  │ │
+    │  │  Vector 1: [0.12, -0.45, ...] → {image_id: "img001", face: 0,   │ │
+    │  │             file_path: "D:\\Photos\\img001.jpg"}                 │ │
+    │  │  Vector 2: [0.08, -0.32, ...] → {image_id: "img001", face: 1,   │ │
+    │  │             file_path: "D:\\Photos\\img001.jpg"}                 │ │
+    │  │  Vector 3: [-0.15, 0.28, ...] → {image_id: "img001", face: 2,   │ │
+    │  │             file_path: "D:\\Photos\\img001.jpg"}                 │ │
     │  │  ... (287 total)                                                │ │
     │  └────────────────────────────────────────────────────────────────┘ │
+    └─────────────────────────────────────────────────────────────────────┘
+```
+
+### Flow 1b: Local Folder Indexing with SSE (`/gallery/index-folder-stream`)
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    LOCAL FOLDER INDEXING FLOW (with Real-time Progress)      │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+    ┌─────────────────────────┐
+    │ User provides folder    │
+    │ path: D:\Photos\Event   │
+    │ + recursive: true       │
+    └───────────┬─────────────┘
+                │
+                ▼
+    ┌─────────────────────────────────────────────────────────────────────┐
+    │  STEP 1: Scan Folder & Send Start Event                             │
+    │                                                                      │
+    │  Scan for: *.jpg, *.jpeg, *.png, *.webp, *.bmp                      │
+    │  Found: 500 images                                                   │
+    │                                                                      │
+    │  SSE: data: {"type":"start","total":500,"message":"Found 500..."}   │
+    └─────────────────────────────────────────────────────────────────────┘
+                │
+                ▼
+    ┌─────────────────────────────────────────────────────────────────────┐
+    │  STEP 2: Process Each Image (streaming progress)                    │
+    │                                                                      │
+    │  FOR each image:                                                     │
+    │    1. Read from disk                                                 │
+    │    2. SCRFD detect faces                                            │
+    │    3. LVFace extract embeddings                                     │
+    │    4. Store in Qdrant with file_path                                │
+    │    5. Stream progress event                                         │
+    │                                                                      │
+    │  ┌─────────────────────────────────────────────────────────────────┐│
+    │  │  SSE Stream (Server-Sent Events):                               ││
+    │  │                                                                  ││
+    │  │  data: {"type":"progress","current":1,"total":500,"percent":0.2,││
+    │  │         "current_image":"photo1.jpg","faces_found":3}           ││
+    │  │                                                                  ││
+    │  │  data: {"type":"progress","current":2,"total":500,"percent":0.4,││
+    │  │         "current_image":"photo2.jpg","faces_found":2}           ││
+    │  │  ...                                                            ││
+    │  │                                                                  ││
+    │  │  data: {"type":"progress","current":500,"total":500,            ││
+    │  │         "percent":100,"current_image":"photo500.jpg"}           ││
+    │  └─────────────────────────────────────────────────────────────────┘│
+    └─────────────────────────────────────────────────────────────────────┘
+                │
+                ▼
+    ┌─────────────────────────────────────────────────────────────────────┐
+    │  STEP 3: Send Completion Event                                       │
+    │                                                                      │
+    │  SSE: data: {"type":"complete","success":true,"total_images":500,   │
+    │              "total_faces_indexed":1287,"processing_time_ms":45000} │
+    └─────────────────────────────────────────────────────────────────────┘
+```
+
+### Flow 1c: Image Serving (`/images`)
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                        IMAGE SERVING FLOW                                    │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+    Frontend requests: GET /images?path=D:\Photos\Event\photo1.jpg
+                │
+                ▼
+    ┌─────────────────────────────────────────────────────────────────────┐
+    │  SECURITY VALIDATION                                                 │
+    │                                                                      │
+    │  ✓ File exists on disk                                              │
+    │  ✓ Path is a file (not directory)                                   │
+    │  ✓ Extension is allowed: .jpg, .jpeg, .png, .webp, .bmp, .gif      │
+    │                                                                      │
+    │  If any check fails → Return 400/404                                │
+    └─────────────────────────────────────────────────────────────────────┘
+                │
+                ▼
+    ┌─────────────────────────────────────────────────────────────────────┐
+    │  SERVE FILE                                                          │
+    │                                                                      │
+    │  Return: FileResponse                                                │
+    │  Content-Type: image/jpeg (or appropriate type)                     │
+    │  Body: Raw image bytes from disk                                    │
     └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -597,7 +730,24 @@ Vector Size: 512
 Distance Metric: Cosine
 ```
 
-**Data Structure**:
+**Data Structure (Gallery Mode)**:
+```json
+{
+  "id": "uuid-string",
+  "vector": [0.1, -0.2, ..., 0.05],  // 512 dimensions
+  "payload": {
+    "image_id": "uuid-image-id",
+    "image_name": "photo1.jpg",
+    "file_path": "D:\\Photos\\Event\\photo1.jpg",  // For local images
+    "face_index": 0,
+    "bbox": {"x": 100, "y": 50, "width": 80, "height": 100},
+    "indexed_at": "2025-12-24T10:00:00Z",
+    "type": "gallery"
+  }
+}
+```
+
+**Data Structure (Registered Person Mode)**:
 ```json
 {
   "id": "uuid-string",
@@ -779,9 +929,12 @@ Query Image
 |----------|--------|-------|--------|-------------|
 | `/gallery/index` | POST | Image + optional metadata | image_id, face count | Index a single image |
 | `/gallery/index-bulk` | POST | Multiple images | Summary of all indexed | Index many images at once |
+| `/gallery/index-folder` | POST | Folder path + options | Summary | Index local folder (no progress) |
+| `/gallery/index-folder-stream` | POST | Folder path + options | SSE stream | Index local folder with real-time progress |
 | `/gallery/find-person` | POST | Reference image | List of matching images | Find all photos of a person |
 | `/gallery/stats` | GET | - | Gallery statistics | Get indexed image/face counts |
 | `/gallery/image/{id}` | DELETE | image_id | Deleted count | Remove image from gallery |
+| `/images` | GET | path (query param) | Image file | Serve local image from disk |
 
 ### Face Operations
 
@@ -819,13 +972,32 @@ Face Finder/
 ├── models.py                    # Pydantic request/response schemas
 ├── requirements.txt             # Python dependencies
 ├── .env                         # Environment configuration
+├── ARCHITECTURE.md              # This documentation
 ├── services/
 │   ├── face_detection.py        # SCRFD wrapper
 │   ├── face_embedding.py        # LVFace wrapper  
 │   └── qdrant_service.py        # Qdrant operations
-└── models/
-    ├── scrfd.onnx               # Face detection model
-    └── lvface.onnx              # Face embedding model
+├── models/
+│   ├── scrfd.onnx               # Face detection model
+│   └── lvface.onnx              # Face embedding model
+└── frontEnd/                    # React frontend
+    ├── package.json
+    ├── vite.config.ts
+    └── src/
+        ├── App.tsx              # Main app with routing
+        ├── main.tsx             # Entry point
+        ├── components/
+        │   ├── Dropzone.tsx     # Drag & drop file upload
+        │   ├── Navbar.tsx       # Navigation bar
+        │   └── ResultsGrid.tsx  # Display search results with images
+        ├── pages/
+        │   ├── UploadPage.tsx   # File upload & folder indexing
+        │   ├── SearchPage.tsx   # Find person in photos
+        │   ├── GalleryPage.tsx  # Gallery statistics
+        │   ├── VerifyPage.tsx   # Face verification
+        │   └── SettingsPage.tsx # System health & settings
+        └── services/
+            └── api.ts           # API client with SSE support
 ```
 
 ---
@@ -841,8 +1013,59 @@ Face Finder/
 | Index Single Image | 100-300ms | Depends on faces in image |
 | Find Person | 50-150ms | 1 query face, CPU |
 | Bulk Index (100 images) | 10-30s | Depends on total faces |
+| Folder Index (1000 images) | 2-5 min | With SSE progress updates |
 
 **GPU Acceleration**: Set `USE_GPU=true` for 3-5x speedup on embedding extraction.
+
+---
+
+## Frontend Architecture
+
+### Technology Stack
+- **React 18** with TypeScript
+- **Vite** for fast development builds
+- **Tailwind CSS** for styling
+- **React Router** for navigation
+- **Axios** for REST API calls
+- **Fetch API** for SSE streaming
+
+### Pages
+
+| Page | Path | Description |
+|------|------|-------------|
+| Home | `/` | Dashboard with quick stats |
+| Upload | `/upload` | File upload (drag & drop) or folder path indexing |
+| Search | `/search` | Find person in indexed photos |
+| Gallery | `/gallery` | View gallery statistics |
+| Verify | `/verify` | Compare two faces |
+| Settings | `/settings` | System health and management |
+
+### Real-time Progress (SSE)
+
+For folder indexing, the frontend uses Server-Sent Events to show real-time progress:
+
+```typescript
+// Frontend SSE handling
+fetch('/api/gallery/index-folder-stream', { method: 'POST', body: JSON.stringify(request) })
+  .then(response => {
+    const reader = response.body.getReader();
+    // Read SSE events
+    // data: {"type":"progress","current":50,"total":500,"percent":10}
+  });
+```
+
+Progress data structure:
+```typescript
+interface FolderIndexProgress {
+  type: 'start' | 'progress' | 'complete' | 'error';
+  current?: number;           // Current image index
+  total?: number;             // Total images
+  percent?: number;           // Completion percentage
+  current_image?: string;     // Current file name
+  faces_found?: number;       // Faces in current image
+  total_faces_so_far?: number;// Running total
+}
+```
 
 ---
 
@@ -874,6 +1097,7 @@ Use when you have a collection of photos and want to find specific people.
 - `type: "gallery"`
 - `image_id`: Unique identifier for the source image
 - `image_name`: Original filename
+- `file_path`: Absolute path to image (for local folder indexing)
 - `face_index`: Which face in the image (0, 1, 2, ...)
 - `bbox`: Bounding box location
 - `embedding`: 512-dim vector
@@ -893,3 +1117,42 @@ Use when you want to register known individuals and identify them later.
 - `embedding`: 512-dim vector
 
 Both modes can coexist in the same database, filtered by the `type` field.
+
+---
+
+## Running the Application
+
+### Prerequisites
+1. Docker (for Qdrant)
+2. Python 3.11+
+3. Node.js 18+ (for frontend)
+
+### Start Services
+
+```bash
+# 1. Start Qdrant (vector database)
+docker run -p 6333:6333 -p 6334:6334 qdrant/qdrant
+
+# 2. Start Backend (in project root)
+python main.py
+# API available at http://localhost:8000
+# Swagger docs at http://localhost:8000/docs
+
+# 3. Start Frontend (in frontEnd folder)
+cd frontEnd
+npm install
+npm run dev
+# Frontend available at http://localhost:5173
+```
+
+### Environment Variables
+
+Create a `.env` file in the project root:
+
+```env
+QDRANT_HOST=localhost
+QDRANT_PORT=6333
+SIMILARITY_THRESHOLD=0.6
+USE_GPU=false
+```
+
