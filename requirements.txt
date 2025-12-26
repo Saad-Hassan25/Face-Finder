@@ -1,0 +1,28 @@
+# FastAPI and server
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+python-multipart>=0.0.6
+
+# Face Detection - SCRFD
+scrfd>=0.2.0
+
+# Face Recognition - LVFace (ONNX)
+# Use onnxruntime-gpu for GPU acceleration, or onnxruntime for CPU-only
+onnxruntime>=1.19.0
+# onnxruntime-gpu>=1.19.0  # Uncomment for GPU support (requires CUDA)
+
+# Vector Database - Qdrant
+qdrant-client>=1.7.0
+
+# Image processing
+opencv-python>=4.8.0
+Pillow>=10.0.0
+numpy>=1.23.0
+scikit-image>=0.22.0
+
+# Utilities
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
+python-dotenv>=1.0.0
+requests>=2.31.0
+aiofiles>=23.2.0
