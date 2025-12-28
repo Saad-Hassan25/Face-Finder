@@ -2,3 +2,5 @@ faceFinder/
 services/__pycache__/
 models/scrfd.onnx
 models/lvface.onnx
+__pycache__/
+*.pyc
