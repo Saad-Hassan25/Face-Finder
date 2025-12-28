@@ -15,9 +15,9 @@ A powerful face detection, recognition, and search application that helps you fi
 | Feature | Description |
 |---------|-------------|
 | 🔍 **Face Detection** | SCRFD model - fast and accurate face detection with keypoint alignment |
-| 🧠 **Face Recognition** | LVFace (ICCV 2025) - state-of-the-art face embeddings using Vision Transformer |
+| 🧠 **Face Recognition** | LVFace (ICCV 2025) - state-of-the-art face embeddings |
 | 🗄️ **Vector Search** | Qdrant - efficient similarity search across millions of faces |
-| ⚡ **GPU Acceleration** | CUDA/DirectML support for fast inference on NVIDIA/AMD GPUs |
+| ⚡ **GPU Acceleration** | CUDA/DirectML support for fast inference on GPUs |
 | 💾 **Album System** | Save/load indexed galleries without reprocessing |
 | 🌐 **Modern UI** | React + TypeScript frontend with real-time progress bars |
 
@@ -136,7 +136,7 @@ A powerful face detection, recognition, and search application that helps you fi
 ```powershell
 # Create virtual environment
 python -m venv faceFinder
-.\faceFinder\Scripts\Activate.ps1
+faceFinder\Scripts\activate
 
 # Install dependencies
 pip install -r requirements.txt
@@ -144,16 +144,21 @@ pip install -r requirements.txt
 
 ### 2. Download AI Models
 
-```powershell
-# Download default models (SCRFD + LVFace-T)
-python download_models.py
+You need to **download** the required models and place them in the `models/` directory.
 
-# Or download specific models
-python download_models.py --models scrfd lvface-b
+---
 
-# List available models
-python download_models.py --list
-```
+#### Download SCRFD (Face Detector)
+
+- Download SCRFD from:  
+  https://github.com/cospectrum/scrfd/tree/main/models
+
+- Place the downloaded file in models directory
+
+- Download LVFace from:  
+https://huggingface.co/bytedance-research/LVFace/tree/main
+- Rename the downloaded file to *lvface*:
+- Place it in models/ directory
 
 ### 3. Setup Qdrant Database
 
@@ -342,7 +347,7 @@ Face-Finder/
 
 ## 🖥️ GPU Support
 
-The application supports GPU acceleration for faster face detection and embedding generation.
+The application supports GPU acceleration for faster embedding generation.
 
 ### NVIDIA CUDA
 ```powershell
@@ -388,16 +393,10 @@ The application automatically selects the best available provider:
 - Check vite.config.ts proxy settings
 - Ensure no CORS issues (should be configured)
 
-## 📜 License
-
-- **Code**: MIT License
-- **SCRFD Model**: [InsightFace License](https://github.com/deepinsight/insightface)
-- **LVFace Model**: MIT License (non-commercial research only)
-
 ## 🙏 Acknowledgments
 
 - [SCRFD](https://github.com/cospectrum/scrfd) - State-of-the-art face detection
-- [LVFace](https://github.com/bytedance/LVFace) - Vision Transformer face recognition (ByteDance)
+- [LVFace](https://github.com/bytedance/LVFace) - SOTA Face recognition (ByteDance)
 - [Qdrant](https://qdrant.tech/) - High-performance vector database
 - [FastAPI](https://fastapi.tiangolo.com/) - Modern Python web framework
 - [React](https://react.dev/) + [Vite](https://vitejs.dev/) - Frontend framework
