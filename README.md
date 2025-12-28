@@ -5,6 +5,7 @@ A powerful face detection, recognition, and search application that helps you fi
 ## 🎯 What It Does
 
 - **Index Photo Collections**: Process folders of images to detect and index all faces
+- **Google Drive Integration**: Connect to your Google Drive and index photos directly from the cloud
 - **Find People in Photos**: Upload a selfie and find all photos containing that person
 - **Face Verification**: Compare two photos to check if they're the same person
 - **Album Management**: Save indexed galleries as albums to switch between events/collections
@@ -19,6 +20,7 @@ A powerful face detection, recognition, and search application that helps you fi
 | 🗄️ **Vector Search** | Qdrant - efficient similarity search across millions of faces |
 | ⚡ **GPU Acceleration** | CUDA/DirectML support for fast inference on GPUs |
 | 💾 **Album System** | Save/load indexed galleries without reprocessing |
+| ☁️ **Google Drive** | Index photos directly from your Google Drive |
 | 🌐 **Modern UI** | React + TypeScript frontend with real-time progress bars |
 
 ## 🏗️ Architecture
@@ -122,6 +124,29 @@ A powerful face detection, recognition, and search application that helps you fi
 - **Load**: Clears main gallery, restores from saved collection
 - **Switch**: Easily switch between Wedding, Birthday, Conference, etc.
 
+### 4. Google Drive Integration
+
+```
+┌──────────────┐    ┌──────────────┐    ┌──────────────┐    ┌─────────────┐
+│   Google     │───▶│   Download   │───▶│   Process    │───▶│   Store     │
+│   Drive      │    │   to RAM     │    │   Face &     │    │  Embedding  │
+│   OAuth 2.0  │    │   (stream)   │    │   Embed      │    │  in Qdrant  │
+└──────────────┘    └──────────────┘    └──────────────┘    └─────────────┘
+                           │
+                           ▼
+                    ┌──────────────┐
+                    │  🔒 Privacy  │
+                    │  Images are  │
+                    │  NEVER saved │
+                    │  to disk     │
+                    └──────────────┘
+```
+
+- **OAuth 2.0**: Secure authentication with Google
+- **Read-only Access**: Only reads your photos, never modifies them
+- **Memory Processing**: Images downloaded to RAM, processed, then discarded
+- **Privacy First**: Only face embeddings (512 numbers) are stored, not images
+
 ## 🚀 Quick Start
 
 ### Prerequisites
@@ -192,7 +217,27 @@ QDRANT_PORT=6333
 USE_GPU=true
 ```
 
-### 5. Start Backend
+### 5. Setup Google Drive (Optional)
+
+To enable Google Drive integration:
+
+1. Go to [Google Cloud Console](https://console.cloud.google.com/)
+2. Create a new project or select existing one
+3. Enable the **Google Drive API**
+4. Go to **Credentials** → **Create Credentials** → **OAuth 2.0 Client ID**
+5. Select **Desktop app** as application type
+6. Download the JSON file and save as `credentials.json` in project root
+
+```
+Face-Finder/
+├── credentials.json    ← Place here
+├── main.py
+└── ...
+```
+
+> **Note**: The app uses read-only access (`drive.readonly` scope). Your photos are never stored - only processed in memory.
+
+### 6. Start Backend
 
 ```powershell
 # Activate environment first
@@ -204,7 +249,7 @@ python main.py
 
 Backend runs at: http://localhost:8000
 
-### 6. Start Frontend
+### 7. Start Frontend
 
 ```powershell
 # In a new terminal
@@ -222,10 +267,15 @@ Frontend runs at: http://localhost:5173
 ## 📱 Using the Application
 
 ### Upload Page
-1. Enter a folder path containing your photos
-2. Click "Index Folder" 
-3. Watch the progress bar as faces are detected and indexed
-4. See stats: total images processed, faces found
+1. **Upload Files**: Drag & drop images or click to select
+2. **Index Folder**: Enter a local folder path containing your photos
+3. **Google Drive**: Connect to your Drive and browse folders
+   - Click "Connect to Google Drive"
+   - Authorize read-only access
+   - Browse and select a folder
+   - Click "Index Drive Folder"
+4. Watch the progress bar as faces are detected and indexed
+5. See stats: total images processed, faces found, processing time
 
 ### Search Page
 1. Upload a photo of the person you want to find
@@ -269,6 +319,19 @@ Frontend runs at: http://localhost:5173
 | `/gallery/load/{name}/stream` | POST | Load album with progress (SSE) |
 | `/gallery/saved` | GET | List all saved albums |
 | `/gallery/saved/{name}` | DELETE | Delete a saved album |
+
+### Google Drive Operations
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/drive/status` | GET | Check Drive connection status |
+| `/drive/auth/url` | GET | Get OAuth authorization URL |
+| `/drive/auth/callback` | GET | Handle OAuth callback |
+| `/drive/logout` | POST | Disconnect from Google Drive |
+| `/drive/folders` | GET | List Drive folders |
+| `/drive/contents/{id}` | GET | List folder contents |
+| `/drive/index/{id}` | POST | Index Drive folder (SSE) |
+| `/drive/thumbnail/{id}` | GET | Get file thumbnail |
 
 ### Face Operations
 
@@ -318,20 +381,23 @@ Face-Finder/
 ├── services/
 │   ├── face_detection.py      # SCRFD face detection
 │   ├── face_embedding.py      # LVFace embeddings (GPU/CPU)
-│   └── qdrant_service.py      # Vector DB operations & albums
+│   ├── qdrant_service.py      # Vector DB operations & albums
+│   └── google_drive.py        # Google Drive OAuth & file access
 │
 ├── frontEnd/
 │   ├── src/
 │   │   ├── App.tsx            # Main app with routing
 │   │   ├── pages/
-│   │   │   ├── UploadPage.tsx # Folder indexing with progress
+│   │   │   ├── UploadPage.tsx # Folder/Drive indexing with progress
 │   │   │   ├── SearchPage.tsx # Find person in photos
 │   │   │   ├── AlbumsPage.tsx # Save/load gallery albums
 │   │   │   ├── VerifyPage.tsx # Face verification
+│   │   │   ├── DriveCallbackPage.tsx # OAuth callback handler
 │   │   │   └── SettingsPage.tsx # System health & config
 │   │   ├── components/
 │   │   │   ├── Navbar.tsx     # Navigation sidebar
 │   │   │   ├── ResultsGrid.tsx # Photo results display
+│   │   │   ├── DriveFolderBrowser.tsx # Drive folder browser modal
 │   │   │   └── LoadingSpinner.tsx
 │   │   └── services/
 │   │       └── api.ts         # API client with SSE support
@@ -341,6 +407,8 @@ Face-Finder/
 ├── models/                    # AI model files (auto-downloaded)
 │   ├── scrfd.onnx
 │   └── lvface.onnx
+│
+├── credentials.json           # Google OAuth credentials (you provide)
 │
 └── faceFinder/                # Python virtual environment
 ```
@@ -392,6 +460,17 @@ The application automatically selects the best available provider:
 - Backend must be running on port 8000
 - Check vite.config.ts proxy settings
 - Ensure no CORS issues (should be configured)
+
+### "Google Drive connection failed"
+- Ensure `credentials.json` exists in project root
+- Check that Google Drive API is enabled in Cloud Console
+- Verify OAuth consent screen is configured
+- Try disconnecting and reconnecting
+
+### "Drive indexing slow"
+- Images are downloaded one at a time to preserve memory
+- Large folders will take time (progress shown in real-time)
+- Consider using local folders for very large collections
 
 ## 🙏 Acknowledgments
 
