@@ -1484,6 +1484,246 @@ async def clear_collection():
         )
 
 
+# ================== Google Drive Endpoints ==================
+
+from services.google_drive import get_drive_service
+
+@app.get("/drive/status", tags=["Google Drive"])
+async def drive_status():
+    """Check if user is connected to Google Drive."""
+    drive = get_drive_service()
+    if drive.is_authenticated:
+        user_info = drive.get_user_info()
+        return {
+            "connected": True,
+            "user": user_info
+        }
+    return {"connected": False, "user": None}
+
+
+@app.get("/drive/auth/url", tags=["Google Drive"])
+async def get_drive_auth_url(redirect_uri: str = "http://localhost:5173/drive/callback"):
+    """Get the Google OAuth authorization URL."""
+    drive = get_drive_service()
+    auth_url = drive.get_auth_url(redirect_uri)
+    if auth_url:
+        return {"auth_url": auth_url}
+    raise HTTPException(status_code=500, detail="credentials.json not found. Please set up Google OAuth.")
+
+
+@app.get("/drive/auth/callback", tags=["Google Drive"])
+async def drive_auth_callback(code: str, redirect_uri: str = "http://localhost:5173/drive/callback"):
+    """Handle the OAuth callback from Google."""
+    drive = get_drive_service()
+    success = drive.handle_callback(code, redirect_uri)
+    if success:
+        return {"success": True, "message": "Successfully connected to Google Drive"}
+    raise HTTPException(status_code=400, detail="Failed to authenticate with Google Drive")
+
+
+@app.post("/drive/logout", tags=["Google Drive"])
+async def drive_logout():
+    """Disconnect from Google Drive."""
+    drive = get_drive_service()
+    success = drive.logout()
+    return {"success": success}
+
+
+@app.get("/drive/folders", tags=["Google Drive"])
+async def list_drive_folders(parent_id: str = "root"):
+    """List folders in Google Drive."""
+    drive = get_drive_service()
+    if not drive.is_authenticated:
+        raise HTTPException(status_code=401, detail="Not connected to Google Drive")
+    
+    folders = drive.list_folders(parent_id)
+    return {"folders": folders, "parent_id": parent_id}
+
+
+@app.get("/drive/contents/{folder_id}", tags=["Google Drive"])
+async def list_drive_contents(folder_id: str = "root"):
+    """List all contents (files and folders) in a Google Drive folder."""
+    drive = get_drive_service()
+    if not drive.is_authenticated:
+        raise HTTPException(status_code=401, detail="Not connected to Google Drive")
+    
+    contents = drive.list_all_contents(folder_id)
+    
+    # Separate folders and files
+    folders = [c for c in contents if c['mimeType'] == 'application/vnd.google-apps.folder']
+    files = [c for c in contents if c['mimeType'] != 'application/vnd.google-apps.folder']
+    
+    return {
+        "folder_id": folder_id,
+        "folders": folders,
+        "files": files,
+        "total_items": len(contents)
+    }
+
+
+@app.get("/drive/images/{folder_id}", tags=["Google Drive"])
+async def list_drive_images(folder_id: str, recursive: bool = False):
+    """List only image files in a Google Drive folder."""
+    drive = get_drive_service()
+    if not drive.is_authenticated:
+        raise HTTPException(status_code=401, detail="Not connected to Google Drive")
+    
+    images = drive.list_files(folder_id, images_only=True)
+    total_count = len(images)
+    
+    if recursive:
+        total_count = drive.get_folder_image_count(folder_id, recursive=True)
+    
+    return {
+        "folder_id": folder_id,
+        "images": images,
+        "count": len(images),
+        "total_recursive": total_count if recursive else None
+    }
+
+
+def generate_drive_index_events(folder_id: str, recursive: bool):
+    """Generate SSE events for indexing a Google Drive folder."""
+    import time
+    start_time = time.time()
+    
+    drive = get_drive_service()
+    detector = get_detector()
+    embedder = get_embedder()
+    qdrant = get_qdrant()
+    
+    if not drive.is_authenticated:
+        yield f"data: {json.dumps({'type': 'error', 'message': 'Not connected to Google Drive'})}\n\n"
+        return
+    
+    try:
+        # Count total images first
+        yield f"data: {json.dumps({'type': 'start', 'message': 'Counting images...'})}\n\n"
+        
+        total_images = drive.get_folder_image_count(folder_id, recursive=recursive)
+        
+        if total_images == 0:
+            yield f"data: {json.dumps({'type': 'complete', 'message': 'No images found in folder', 'total_images': 0, 'total_faces': 0, 'processing_time_ms': 0})}\n\n"
+            return
+        
+        yield f"data: {json.dumps({'type': 'progress', 'message': f'Found {total_images} images', 'current': 0, 'total': total_images})}\n\n"
+        
+        processed = 0
+        total_faces = 0
+        failed = 0
+        
+        # Process each image
+        for image_data in drive.iterate_images(folder_id, recursive=recursive):
+            try:
+                # Load image from bytes
+                image = Image.open(io.BytesIO(image_data['content']))
+                if image.mode != 'RGB':
+                    image = image.convert('RGB')
+                image_np = np.array(image)
+                
+                # Detect faces
+                faces = detector.detect_faces(image_np, return_keypoints=True)
+                
+                if faces:
+                    # Get aligned faces
+                    aligned_faces = detector.get_aligned_faces(image_np, faces)
+                    
+                    # Extract embeddings and bboxes
+                    embeddings = []
+                    bboxes = []
+                    for i, (face_img, face_info) in enumerate(zip(aligned_faces, faces)):
+                        emb = embedder.get_embedding_with_flip(face_img)
+                        embeddings.append(emb)
+                        bboxes.append({
+                            "x": face_info.bbox.x,
+                            "y": face_info.bbox.y,
+                            "width": face_info.bbox.width,
+                            "height": face_info.bbox.height
+                        })
+                    
+                    # Generate image ID and store in Qdrant
+                    image_id = str(uuid.uuid4())
+                    qdrant.index_faces_from_image_batch(
+                        embeddings=embeddings,
+                        image_id=image_id,
+                        image_name=image_data['name'],
+                        file_path=f"gdrive://{image_data['id']}",  # Special prefix for Drive files
+                        bboxes=bboxes
+                    )
+                    total_faces += len(faces)
+                
+                processed += 1
+                
+                # Send progress update
+                progress_data = {
+                    'type': 'progress',
+                    'current': processed,
+                    'total': total_images,
+                    'percent': int((processed / total_images) * 100),
+                    'current_image': image_data['name'],
+                    'faces_found': len(faces) if faces else 0,
+                    'total_faces_so_far': total_faces
+                }
+                yield f"data: {json.dumps(progress_data)}\n\n"
+                
+            except Exception as e:
+                logger.error(f"Failed to process {image_data['name']}: {e}")
+                failed += 1
+                processed += 1
+            
+            # Clear memory
+            del image_data['content']
+        
+        # Complete
+        processing_time_ms = int((time.time() - start_time) * 1000)
+        complete_data = {
+            'type': 'complete',
+            'message': f'Successfully indexed {processed} images with {total_faces} faces',
+            'total_images': processed,
+            'total_faces': total_faces,
+            'failed': failed,
+            'processing_time_ms': processing_time_ms
+        }
+        yield f"data: {json.dumps(complete_data)}\n\n"
+        
+    except Exception as e:
+        logger.error(f"Drive indexing failed: {e}")
+        yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+
+
+@app.post("/drive/index/{folder_id}", tags=["Google Drive"])
+async def index_drive_folder(folder_id: str, recursive: bool = True):
+    """
+    Index all images from a Google Drive folder.
+    Returns Server-Sent Events for progress tracking.
+    """
+    return StreamingResponse(
+        generate_drive_index_events(folder_id, recursive),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )
+
+
+@app.get("/drive/thumbnail/{file_id}", tags=["Google Drive"])
+async def get_drive_thumbnail(file_id: str):
+    """Get a thumbnail for a Google Drive image."""
+    drive = get_drive_service()
+    if not drive.is_authenticated:
+        raise HTTPException(status_code=401, detail="Not connected to Google Drive")
+    
+    content = drive.download_file(file_id)
+    if content:
+        return StreamingResponse(
+            io.BytesIO(content),
+            media_type="image/jpeg"
+        )
+    raise HTTPException(status_code=404, detail="Image not found")
+
+
 # ================== Application Entry Point ==================
 
 if __name__ == "__main__":

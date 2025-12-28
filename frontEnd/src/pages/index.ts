@@ -5,3 +5,4 @@ export { SearchPage } from './SearchPage';
 export { VerifyPage } from './VerifyPage';
 export { AlbumsPage } from './AlbumsPage';
 export { SettingsPage } from './SettingsPage';
+export { DriveCallbackPage } from './DriveCallbackPage';

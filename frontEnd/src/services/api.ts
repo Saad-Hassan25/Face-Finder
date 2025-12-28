@@ -552,4 +552,179 @@ export const systemApi = {
   },
 };
 
+// ================== Google Drive API ==================
+
+export interface DriveUser {
+  displayName: string;
+  emailAddress: string;
+  photoLink?: string;
+}
+
+export interface DriveStatusResponse {
+  connected: boolean;
+  user: DriveUser | null;
+}
+
+export interface DriveFolder {
+  id: string;
+  name: string;
+  mimeType: string;
+}
+
+export interface DriveFile {
+  id: string;
+  name: string;
+  mimeType: string;
+  size?: string;
+  thumbnailLink?: string;
+}
+
+export interface DriveContentsResponse {
+  folder_id: string;
+  folders: DriveFolder[];
+  files: DriveFile[];
+  total_items: number;
+}
+
+export interface DriveIndexProgress {
+  type: 'start' | 'progress' | 'complete' | 'error';
+  message?: string;
+  current?: number;
+  total?: number;
+  percent?: number;
+  current_image?: string;
+  faces_found?: number;
+  total_faces_so_far?: number;
+  total_images?: number;
+  total_faces?: number;
+  failed?: number;
+  processing_time_ms?: number;
+}
+
+export const googleDriveApi = {
+  // Check connection status
+  getStatus: async (): Promise<DriveStatusResponse> => {
+    const response = await api.get<DriveStatusResponse>('/drive/status');
+    return response.data;
+  },
+
+  // Get OAuth authorization URL
+  getAuthUrl: async (redirectUri?: string): Promise<{ auth_url: string }> => {
+    const params = redirectUri ? `?redirect_uri=${encodeURIComponent(redirectUri)}` : '';
+    const response = await api.get<{ auth_url: string }>(`/drive/auth/url${params}`);
+    return response.data;
+  },
+
+  // Handle OAuth callback
+  handleCallback: async (code: string, redirectUri?: string): Promise<{ success: boolean; message: string }> => {
+    const params = new URLSearchParams({ code });
+    if (redirectUri) params.append('redirect_uri', redirectUri);
+    const response = await api.get<{ success: boolean; message: string }>(`/drive/auth/callback?${params.toString()}`);
+    return response.data;
+  },
+
+  // Disconnect from Google Drive
+  logout: async (): Promise<{ success: boolean }> => {
+    const response = await api.post<{ success: boolean }>('/drive/logout');
+    return response.data;
+  },
+
+  // List folders
+  listFolders: async (parentId: string = 'root'): Promise<{ folders: DriveFolder[]; parent_id: string }> => {
+    const response = await api.get<{ folders: DriveFolder[]; parent_id: string }>(`/drive/folders?parent_id=${parentId}`);
+    return response.data;
+  },
+
+  // List all contents (files + folders)
+  listContents: async (folderId: string = 'root'): Promise<DriveContentsResponse> => {
+    const response = await api.get<DriveContentsResponse>(`/drive/contents/${folderId}`);
+    return response.data;
+  },
+
+  // List only images
+  listImages: async (folderId: string, recursive: boolean = false): Promise<{ images: DriveFile[]; count: number; total_recursive?: number }> => {
+    const response = await api.get(`/drive/images/${folderId}?recursive=${recursive}`);
+    return response.data;
+  },
+
+  // Index a folder with progress (returns Promise for easier use)
+  indexFolder: async (
+    folderId: string,
+    onProgress: (event: DriveIndexProgress) => void,
+    recursive: boolean = true
+  ): Promise<FolderIndexResponse> => {
+    return new Promise((resolve, reject) => {
+      fetch(`${API_BASE_URL}/drive/index/${folderId}?recursive=${recursive}`, {
+        method: 'POST',
+      })
+        .then(async (response) => {
+          if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+          }
+
+          const reader = response.body?.getReader();
+          if (!reader) {
+            throw new Error('No response body');
+          }
+
+          const decoder = new TextDecoder();
+          let buffer = '';
+          let finalResult: FolderIndexResponse | null = null;
+
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n\n');
+            buffer = lines.pop() || '';
+
+            for (const line of lines) {
+              if (line.startsWith('data: ')) {
+                try {
+                  const event: DriveIndexProgress = JSON.parse(line.slice(6));
+                  if (event.type === 'complete') {
+                    // Build final result from complete event
+                    finalResult = {
+                      success: true,
+                      message: event.message || 'Indexing complete',
+                      folder_path: `gdrive://${folderId}`,
+                      total_images: event.total_images || event.total || 0,
+                      total_faces_indexed: event.total_faces || event.total_faces_so_far || 0,
+                      images_processed: [],
+                      failed_images: new Array(event.failed || 0).fill({ image_name: 'Unknown', error: 'Processing failed' }),
+                      processing_time_ms: event.processing_time_ms || 0,
+                    };
+                  } else if (event.type === 'error') {
+                    reject(new Error(event.message || 'Unknown error'));
+                    return;
+                  } else {
+                    onProgress(event);
+                  }
+                } catch (e) {
+                  console.error('Failed to parse SSE event:', e);
+                }
+              }
+            }
+          }
+
+          if (finalResult) {
+            resolve(finalResult);
+          } else {
+            reject(new Error('No completion event received'));
+          }
+        })
+        .catch((error) => {
+          reject(error);
+        });
+    });
+  },
+
+  // Get thumbnail URL for a Drive file
+  getThumbnailUrl: (fileId: string): string => {
+    return `${API_BASE_URL}/drive/thumbnail/${fileId}`;
+  },
+};
+
 export default api;
+

@@ -8,3 +8,4 @@ export {
   LoadingSpinner,
   ProgressBar 
 } from './ResultsGrid';
+export { DriveFolderBrowser } from './DriveFolderBrowser';

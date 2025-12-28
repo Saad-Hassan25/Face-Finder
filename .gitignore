@@ -1,9 +1,9 @@
 __pycache__/
 **/__pycache__/
 *.pyc
-
 faceFinder/
 services/__pycache__/
 models/scrfd.onnx
 models/lvface.onnx
-.env/
+.env
+credentials.json

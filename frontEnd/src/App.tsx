@@ -8,6 +8,7 @@ import {
   VerifyPage,
   AlbumsPage,
   SettingsPage,
+  DriveCallbackPage,
 } from './pages';
 
 function App() {
@@ -24,6 +25,7 @@ function App() {
             <Route path="/verify" element={<VerifyPage />} />
             <Route path="/albums" element={<AlbumsPage />} />
             <Route path="/settings" element={<SettingsPage />} />
+            <Route path="/drive/callback" element={<DriveCallbackPage />} />
           </Routes>
         </main>
       </div>

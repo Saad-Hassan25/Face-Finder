@@ -1,9 +1,9 @@
-import { useState } from 'react';
-import { Upload, CheckCircle, AlertCircle, FolderOpen } from 'lucide-react';
-import { Dropzone, ImagePreviewGrid, LoadingSpinner, ProgressBar } from '../components';
-import { galleryApi, type BulkIndexResponse, type FolderIndexResponse, type FolderIndexProgress } from '../services/api';
+import { useState, useEffect } from 'react';
+import { Upload, CheckCircle, AlertCircle, FolderOpen, Cloud, LogOut, RefreshCw } from 'lucide-react';
+import { Dropzone, ImagePreviewGrid, LoadingSpinner, ProgressBar, DriveFolderBrowser } from '../components';
+import { galleryApi, googleDriveApi, type BulkIndexResponse, type FolderIndexResponse, type FolderIndexProgress, type DriveIndexProgress, type DriveStatusResponse } from '../services/api';
 
-type UploadMode = 'files' | 'folder';
+type UploadMode = 'files' | 'folder' | 'drive';
 
 interface FolderProgress {
   current: number;
@@ -24,6 +24,101 @@ export function UploadPage() {
   const [folderProgress, setFolderProgress] = useState<FolderProgress | null>(null);
   const [result, setResult] = useState<BulkIndexResponse | FolderIndexResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  // Google Drive state
+  const [driveStatus, setDriveStatus] = useState<DriveStatusResponse | null>(null);
+  const [driveLoading, setDriveLoading] = useState(false);
+  const [showDriveBrowser, setShowDriveBrowser] = useState(false);
+  const [selectedDriveFolder, setSelectedDriveFolder] = useState<{ id: string; name: string } | null>(null);
+  const [driveRecursive, setDriveRecursive] = useState(true);
+
+  // Check Drive connection status on mount
+  useEffect(() => {
+    checkDriveStatus();
+  }, []);
+
+  const checkDriveStatus = async () => {
+    try {
+      const status = await googleDriveApi.getStatus();
+      setDriveStatus(status);
+    } catch (err) {
+      console.error('Failed to check Drive status:', err);
+      setDriveStatus({ connected: false, user: null });
+    }
+  };
+
+  const handleConnectDrive = async () => {
+    setDriveLoading(true);
+    try {
+      const redirectUri = `${window.location.origin}/drive/callback`;
+      const { auth_url } = await googleDriveApi.getAuthUrl(redirectUri);
+      // Store current location for return
+      sessionStorage.setItem('driveAuthReturn', window.location.pathname);
+      // Redirect to Google OAuth
+      window.location.href = auth_url;
+    } catch (err) {
+      setError('Failed to connect to Google Drive');
+      setDriveLoading(false);
+    }
+  };
+
+  const handleDisconnectDrive = async () => {
+    setDriveLoading(true);
+    try {
+      await googleDriveApi.logout();
+      setDriveStatus({ connected: false, user: null });
+      setSelectedDriveFolder(null);
+    } catch (err) {
+      console.error('Failed to disconnect Drive:', err);
+    } finally {
+      setDriveLoading(false);
+    }
+  };
+
+  const handleDriveFolderSelect = (folderId: string, folderName: string) => {
+    setSelectedDriveFolder({ id: folderId, name: folderName });
+  };
+
+  const handleDriveProgress = (data: DriveIndexProgress) => {
+    setFolderProgress({
+      current: data.current || 0,
+      total: data.total || data.total_images || 0,
+      percent: data.percent || 0,
+      currentImage: data.current_file || data.current_image || '',
+      facesFound: data.faces_found || 0,
+      totalFacesSoFar: data.total_faces_so_far || 0,
+    });
+  };
+
+  const handleDriveIndex = async () => {
+    if (!selectedDriveFolder) return;
+
+    setUploading(true);
+    setProgress(0);
+    setFolderProgress(null);
+    setError(null);
+    setResult(null);
+
+    try {
+      const response = await googleDriveApi.indexFolder(
+        selectedDriveFolder.id,
+        handleDriveProgress,
+        driveRecursive
+      );
+      // Set result with the folder name
+      setResult({
+        ...response,
+        folder_path: `Google Drive: ${selectedDriveFolder.name}`,
+      });
+      setSelectedDriveFolder(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Drive indexing failed');
+    } finally {
+      setUploading(false);
+      setProgress(0);
+      setFolderProgress(null);
+    }
+  };
 
   const handleFilesAccepted = (acceptedFiles: File[]) => {
     setFiles((prev) => [...prev, ...acceptedFiles]);
@@ -106,7 +201,7 @@ export function UploadPage() {
       </div>
 
       {/* Mode Toggle */}
-      <div className="flex gap-2">
+      <div className="flex gap-2 flex-wrap">
         <button
           onClick={() => setMode('files')}
           className={`px-4 py-2 rounded-lg font-medium transition-colors ${
@@ -128,6 +223,17 @@ export function UploadPage() {
         >
           <FolderOpen className="w-4 h-4 inline-block mr-2" />
           Index Folder
+        </button>
+        <button
+          onClick={() => setMode('drive')}
+          className={`px-4 py-2 rounded-lg font-medium transition-colors ${
+            mode === 'drive'
+              ? 'bg-blue-600 text-white'
+              : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+          }`}
+        >
+          <Cloud className="w-4 h-4 inline-block mr-2" />
+          Google Drive
         </button>
       </div>
 
@@ -289,6 +395,171 @@ export function UploadPage() {
           </div>
         </div>
       )}
+
+      {/* Google Drive Mode */}
+      {mode === 'drive' && (
+        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+          <h2 className="text-lg font-semibold text-gray-900 mb-4">Index from Google Drive</h2>
+          <p className="text-sm text-gray-500 mb-4">
+            Connect to your Google Drive and select a folder containing images. Images are processed 
+            in memory and never stored - only face embeddings are saved.
+          </p>
+
+          {/* Connection Status */}
+          {!driveStatus?.connected ? (
+            <div className="space-y-4">
+              <div className="bg-gray-50 rounded-lg p-4 text-center">
+                <Cloud className="w-12 h-12 text-gray-400 mx-auto mb-3" />
+                <p className="text-gray-600 mb-4">Connect your Google Drive to get started</p>
+                <button
+                  onClick={handleConnectDrive}
+                  disabled={driveLoading}
+                  className="px-6 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-50 flex items-center gap-2 mx-auto"
+                >
+                  {driveLoading ? (
+                    <>
+                      <LoadingSpinner size="sm" />
+                      Connecting...
+                    </>
+                  ) : (
+                    <>
+                      <Cloud className="w-4 h-4" />
+                      Connect to Google Drive
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {/* Connected User Info */}
+              <div className="flex items-center justify-between bg-green-50 rounded-lg p-3">
+                <div className="flex items-center gap-3">
+                  <CheckCircle className="w-5 h-5 text-green-500" />
+                  <div>
+                    <p className="text-sm font-medium text-green-800">Connected</p>
+                    <p className="text-xs text-green-600">{driveStatus.user?.email}</p>
+                  </div>
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    onClick={checkDriveStatus}
+                    disabled={driveLoading}
+                    className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg"
+                    title="Refresh status"
+                  >
+                    <RefreshCw className={`w-4 h-4 ${driveLoading ? 'animate-spin' : ''}`} />
+                  </button>
+                  <button
+                    onClick={handleDisconnectDrive}
+                    disabled={driveLoading}
+                    className="px-3 py-1 text-sm text-red-600 hover:bg-red-50 rounded-lg flex items-center gap-1"
+                  >
+                    <LogOut className="w-4 h-4" />
+                    Disconnect
+                  </button>
+                </div>
+              </div>
+
+              {/* Folder Selection */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Selected Folder
+                </label>
+                <div className="flex gap-2">
+                  <div className="flex-1 px-4 py-2 border border-gray-300 rounded-lg bg-gray-50 text-gray-700">
+                    {selectedDriveFolder ? selectedDriveFolder.name : 'No folder selected'}
+                  </div>
+                  <button
+                    onClick={() => setShowDriveBrowser(true)}
+                    disabled={uploading}
+                    className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-50"
+                  >
+                    Browse Drive
+                  </button>
+                </div>
+              </div>
+
+              {/* Recursive Option */}
+              <div className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  id="driveRecursive"
+                  checked={driveRecursive}
+                  onChange={(e) => setDriveRecursive(e.target.checked)}
+                  disabled={uploading}
+                  className="w-4 h-4 text-blue-600 rounded focus:ring-blue-500"
+                />
+                <label htmlFor="driveRecursive" className="text-sm text-gray-700">
+                  Include subfolders (recursive)
+                </label>
+              </div>
+
+              {/* Index Button */}
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setSelectedDriveFolder(null)}
+                  disabled={uploading || !selectedDriveFolder}
+                  className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 disabled:opacity-50"
+                >
+                  Clear
+                </button>
+                <button
+                  onClick={handleDriveIndex}
+                  disabled={uploading || !selectedDriveFolder}
+                  className="px-6 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-50 flex items-center gap-2"
+                >
+                  {uploading ? (
+                    <>
+                      <LoadingSpinner size="sm" />
+                      Indexing...
+                    </>
+                  ) : (
+                    <>
+                      <Cloud className="w-4 h-4" />
+                      Index Drive Folder
+                    </>
+                  )}
+                </button>
+              </div>
+
+              {/* Drive Indexing Progress */}
+              {uploading && folderProgress && (
+                <div className="mt-4 p-4 bg-blue-50 rounded-lg">
+                  <div className="flex justify-between items-center mb-2">
+                    <span className="text-sm font-medium text-blue-800">
+                      Processing images from Drive...
+                    </span>
+                    <span className="text-sm text-blue-600">
+                      {folderProgress.current} / {folderProgress.total}
+                    </span>
+                  </div>
+                  <ProgressBar progress={folderProgress.percent} />
+                  <div className="mt-3 grid grid-cols-2 gap-4 text-sm">
+                    <div>
+                      <span className="text-gray-500">Current file:</span>
+                      <p className="font-medium text-gray-800 truncate" title={folderProgress.currentImage}>
+                        {folderProgress.currentImage || 'Starting...'}
+                      </p>
+                    </div>
+                    <div>
+                      <span className="text-gray-500">Faces found so far:</span>
+                      <p className="font-medium text-gray-800">{folderProgress.totalFacesSoFar}</p>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Drive Folder Browser Modal */}
+      <DriveFolderBrowser
+        isOpen={showDriveBrowser}
+        onClose={() => setShowDriveBrowser(false)}
+        onSelectFolder={handleDriveFolderSelect}
+      />
 
       {/* Error Message */}
       {error && (
