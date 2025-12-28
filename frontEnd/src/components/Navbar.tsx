@@ -1,5 +1,5 @@
 import { NavLink } from 'react-router-dom';
-import { Upload, Search, Users, Settings, Home, ImageIcon } from 'lucide-react';
+import { Upload, Search, Users, Settings, Home, ImageIcon, FolderOpen } from 'lucide-react';
 
 export function Navbar() {
   const navItems = [
@@ -8,6 +8,7 @@ export function Navbar() {
     { to: '/gallery', icon: ImageIcon, label: 'Gallery' },
     { to: '/search', icon: Search, label: 'Find Person' },
     { to: '/verify', icon: Users, label: 'Verify' },
+    { to: '/albums', icon: FolderOpen, label: 'Albums' },
     { to: '/settings', icon: Settings, label: 'Settings' },
   ];
 

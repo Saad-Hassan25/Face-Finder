@@ -295,6 +295,212 @@ export const galleryApi = {
     const response = await api.delete(`/gallery/image/${imageId}`);
     return response.data;
   },
+
+  // Clear gallery
+  clear: async (): Promise<{ success: boolean; message: string; deleted_count: number }> => {
+    const response = await api.delete('/gallery/clear');
+    return response.data;
+  },
+};
+
+// ================== Saved Galleries API ==================
+
+export interface SavedGalleryInfo {
+  name: string;
+  created_at: string;
+  total_faces: number;
+  unique_images: number;
+}
+
+export interface SaveGalleryResponse {
+  success: boolean;
+  message: string;
+  name: string;
+  faces_saved: number;
+  unique_images: number;
+}
+
+export interface LoadGalleryResponse {
+  success: boolean;
+  message: string;
+  name: string;
+  faces_loaded: number;
+  previous_gallery_cleared: boolean;
+}
+
+export interface ListSavedGalleriesResponse {
+  success: boolean;
+  message: string;
+  galleries: SavedGalleryInfo[];
+}
+
+export interface GalleryProgressEvent {
+  status: 'starting' | 'progress' | 'complete' | 'error';
+  message: string;
+  progress: number;
+  total?: number;
+  copied?: number;
+  loaded?: number;
+  name?: string;
+  faces_saved?: number;
+  faces_loaded?: number;
+  unique_images?: number;
+  previous_gallery_cleared?: boolean;
+}
+
+export const savedGalleryApi = {
+  // Save current gallery
+  save: async (name: string): Promise<SaveGalleryResponse> => {
+    const response = await api.post<SaveGalleryResponse>('/gallery/save', { name });
+    return response.data;
+  },
+
+  // Save current gallery with progress streaming
+  saveWithProgress: (
+    name: string,
+    onProgress: (event: GalleryProgressEvent) => void,
+    onComplete: (event: GalleryProgressEvent) => void,
+    onError: (error: string) => void
+  ): (() => void) => {
+    const controller = new AbortController();
+    
+    fetch(`${API_BASE_URL}/gallery/save/stream`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ name }),
+      signal: controller.signal,
+    })
+      .then(async (response) => {
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        
+        const reader = response.body?.getReader();
+        if (!reader) {
+          throw new Error('No response body');
+        }
+        
+        const decoder = new TextDecoder();
+        let buffer = '';
+        
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n\n');
+          buffer = lines.pop() || '';
+          
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              try {
+                const event: GalleryProgressEvent = JSON.parse(line.slice(6));
+                if (event.status === 'complete') {
+                  onComplete(event);
+                } else if (event.status === 'error') {
+                  onError(event.message);
+                } else {
+                  onProgress(event);
+                }
+              } catch (e) {
+                console.error('Failed to parse SSE event:', e);
+              }
+            }
+          }
+        }
+      })
+      .catch((error) => {
+        if (error.name !== 'AbortError') {
+          onError(error.message || 'Failed to save album');
+        }
+      });
+    
+    return () => controller.abort();
+  },
+
+  // Load a saved gallery
+  load: async (name: string, clearCurrent: boolean = true): Promise<LoadGalleryResponse> => {
+    const response = await api.post<LoadGalleryResponse>(
+      `/gallery/load/${encodeURIComponent(name)}?clear_current=${clearCurrent}`
+    );
+    return response.data;
+  },
+
+  // Load a saved gallery with progress streaming
+  loadWithProgress: (
+    name: string,
+    onProgress: (event: GalleryProgressEvent) => void,
+    onComplete: (event: GalleryProgressEvent) => void,
+    onError: (error: string) => void,
+    clearCurrent: boolean = true
+  ): (() => void) => {
+    const controller = new AbortController();
+    
+    fetch(`${API_BASE_URL}/gallery/load/${encodeURIComponent(name)}/stream?clear_current=${clearCurrent}`, {
+      method: 'POST',
+      signal: controller.signal,
+    })
+      .then(async (response) => {
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        
+        const reader = response.body?.getReader();
+        if (!reader) {
+          throw new Error('No response body');
+        }
+        
+        const decoder = new TextDecoder();
+        let buffer = '';
+        
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n\n');
+          buffer = lines.pop() || '';
+          
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              try {
+                const event: GalleryProgressEvent = JSON.parse(line.slice(6));
+                if (event.status === 'complete') {
+                  onComplete(event);
+                } else if (event.status === 'error') {
+                  onError(event.message);
+                } else {
+                  onProgress(event);
+                }
+              } catch (e) {
+                console.error('Failed to parse SSE event:', e);
+              }
+            }
+          }
+        }
+      })
+      .catch((error) => {
+        if (error.name !== 'AbortError') {
+          onError(error.message || 'Failed to load album');
+        }
+      });
+    
+    return () => controller.abort();
+  },
+
+  // List all saved galleries
+  list: async (): Promise<ListSavedGalleriesResponse> => {
+    const response = await api.get<ListSavedGalleriesResponse>('/gallery/saved');
+    return response.data;
+  },
+
+  // Delete a saved gallery
+  delete: async (name: string): Promise<{ success: boolean; message: string }> => {
+    const response = await api.delete(`/gallery/saved/${encodeURIComponent(name)}`);
+    return response.data;
+  },
 };
 
 // Helper function to get image URL from file path

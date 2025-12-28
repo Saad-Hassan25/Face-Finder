@@ -222,3 +222,43 @@ class FolderIndexResponse(BaseModel):
     images_processed: List[Dict[str, Any]] = []
     failed_images: List[Dict[str, Any]] = []
     processing_time_ms: float = 0
+
+
+# ================== Saved Gallery Models ==================
+
+class SavedGalleryInfo(BaseModel):
+    """Information about a saved gallery"""
+    name: str = Field(..., description="Name of the saved gallery")
+    created_at: str = Field(..., description="When the gallery was saved")
+    total_faces: int = Field(0, description="Number of face embeddings")
+    unique_images: int = Field(0, description="Number of unique images")
+
+
+class SaveGalleryRequest(BaseModel):
+    """Request to save current gallery"""
+    name: str = Field(..., min_length=1, max_length=100, description="Name for the saved gallery")
+
+
+class SaveGalleryResponse(BaseModel):
+    """Response for save gallery operation"""
+    success: bool
+    message: str
+    name: str = ""
+    faces_saved: int = 0
+    unique_images: int = 0
+
+
+class LoadGalleryResponse(BaseModel):
+    """Response for load gallery operation"""
+    success: bool
+    message: str
+    name: str = ""
+    faces_loaded: int = 0
+    previous_gallery_cleared: bool = False
+
+
+class ListSavedGalleriesResponse(BaseModel):
+    """Response for listing saved galleries"""
+    success: bool
+    message: str
+    galleries: List[SavedGalleryInfo] = []

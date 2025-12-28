@@ -39,7 +39,12 @@ from models import (
     BoundingBox,
     GalleryStatsResponse,
     FolderIndexRequest,
-    FolderIndexResponse
+    FolderIndexResponse,
+    SaveGalleryRequest,
+    SaveGalleryResponse,
+    LoadGalleryResponse,
+    ListSavedGalleriesResponse,
+    SavedGalleryInfo
 )
 
 # Configure logging
@@ -1213,6 +1218,190 @@ async def delete_image_from_gallery(image_id: str):
         )
     except Exception as e:
         logger.error(f"Failed to delete image: {e}")
+        return DeleteResponse(
+            success=False,
+            message=str(e)
+        )
+
+
+# ================== Saved Gallery Endpoints ==================
+
+@app.post("/gallery/save", response_model=SaveGalleryResponse, tags=["Saved Galleries"])
+async def save_gallery(request: SaveGalleryRequest):
+    """
+    Save the current gallery with a name.
+    This creates a snapshot of all indexed faces that can be loaded later.
+    """
+    try:
+        qdrant = get_qdrant()
+        result = qdrant.save_gallery(request.name)
+        
+        return SaveGalleryResponse(
+            success=True,
+            message=f"Gallery saved as '{request.name}'",
+            name=request.name,
+            faces_saved=result["faces_saved"],
+            unique_images=result["unique_images"]
+        )
+    except Exception as e:
+        logger.error(f"Failed to save gallery: {e}")
+        return SaveGalleryResponse(
+            success=False,
+            message=str(e)
+        )
+
+
+@app.post("/gallery/load/{name}", response_model=LoadGalleryResponse, tags=["Saved Galleries"])
+async def load_gallery(name: str, clear_current: bool = True):
+    """
+    Load a previously saved gallery.
+    By default, this clears the current gallery and replaces it with the saved one.
+    """
+    try:
+        qdrant = get_qdrant()
+        result = qdrant.load_gallery(name, clear_current=clear_current)
+        
+        return LoadGalleryResponse(
+            success=True,
+            message=f"Gallery '{name}' loaded successfully",
+            name=name,
+            faces_loaded=result["faces_loaded"],
+            previous_gallery_cleared=result["previous_gallery_cleared"]
+        )
+    except ValueError as e:
+        return LoadGalleryResponse(
+            success=False,
+            message=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Failed to load gallery: {e}")
+        return LoadGalleryResponse(
+            success=False,
+            message=str(e)
+        )
+
+
+def generate_save_gallery_events(name: str):
+    """Generate SSE events for save gallery progress."""
+    try:
+        qdrant = get_qdrant()
+        for update in qdrant.save_gallery_streaming(name):
+            yield f"data: {json.dumps(update)}\n\n"
+    except Exception as e:
+        yield f"data: {json.dumps({'status': 'error', 'message': str(e), 'progress': 0})}\n\n"
+
+
+def generate_load_gallery_events(name: str, clear_current: bool):
+    """Generate SSE events for load gallery progress."""
+    try:
+        qdrant = get_qdrant()
+        for update in qdrant.load_gallery_streaming(name, clear_current):
+            yield f"data: {json.dumps(update)}\n\n"
+    except Exception as e:
+        yield f"data: {json.dumps({'status': 'error', 'message': str(e), 'progress': 0})}\n\n"
+
+
+@app.post("/gallery/save/stream", tags=["Saved Galleries"])
+async def save_gallery_stream(request: SaveGalleryRequest):
+    """
+    Save the current gallery with progress updates via Server-Sent Events.
+    Returns a stream of progress events.
+    """
+    return StreamingResponse(
+        generate_save_gallery_events(request.name),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )
+
+
+@app.post("/gallery/load/{name}/stream", tags=["Saved Galleries"])
+async def load_gallery_stream(name: str, clear_current: bool = True):
+    """
+    Load a saved gallery with progress updates via Server-Sent Events.
+    Returns a stream of progress events.
+    """
+    return StreamingResponse(
+        generate_load_gallery_events(name, clear_current),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )
+
+
+@app.get("/gallery/saved", response_model=ListSavedGalleriesResponse, tags=["Saved Galleries"])
+async def list_saved_galleries():
+    """
+    List all saved galleries.
+    """
+    try:
+        qdrant = get_qdrant()
+        galleries = qdrant.list_saved_galleries()
+        
+        return ListSavedGalleriesResponse(
+            success=True,
+            message=f"Found {len(galleries)} saved galleries",
+            galleries=[SavedGalleryInfo(**g) for g in galleries]
+        )
+    except Exception as e:
+        logger.error(f"Failed to list saved galleries: {e}")
+        return ListSavedGalleriesResponse(
+            success=False,
+            message=str(e)
+        )
+
+
+@app.delete("/gallery/saved/{name}", response_model=DeleteResponse, tags=["Saved Galleries"])
+async def delete_saved_gallery(name: str):
+    """
+    Delete a saved gallery.
+    """
+    try:
+        qdrant = get_qdrant()
+        success = qdrant.delete_saved_gallery(name)
+        
+        if success:
+            return DeleteResponse(
+                success=True,
+                message=f"Deleted saved gallery: {name}",
+                deleted_count=1
+            )
+        else:
+            return DeleteResponse(
+                success=False,
+                message=f"Failed to delete saved gallery: {name}"
+            )
+    except Exception as e:
+        logger.error(f"Failed to delete saved gallery: {e}")
+        return DeleteResponse(
+            success=False,
+            message=str(e)
+        )
+
+
+@app.delete("/gallery/clear", response_model=DeleteResponse, tags=["Gallery"])
+async def clear_gallery():
+    """
+    Clear the current gallery (remove all indexed images).
+    This does not affect saved galleries.
+    """
+    try:
+        qdrant = get_qdrant()
+        deleted_count = qdrant.clear_gallery()
+        
+        return DeleteResponse(
+            success=True,
+            message=f"Gallery cleared: {deleted_count} face(s) removed",
+            deleted_count=deleted_count
+        )
+    except Exception as e:
+        logger.error(f"Failed to clear gallery: {e}")
         return DeleteResponse(
             success=False,
             message=str(e)

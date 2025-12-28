@@ -3,7 +3,7 @@ Vector Database Service using Qdrant
 """
 
 import numpy as np
-from typing import List, Optional, Dict, Any, Tuple
+from typing import List, Optional, Dict, Any, Tuple, Generator
 from datetime import datetime
 import uuid
 import logging
@@ -28,6 +28,7 @@ class QdrantService:
         self,
         host: Optional[str] = None,
         port: Optional[int] = None,
+        url: Optional[str] = None,
         collection_name: Optional[str] = None,
         api_key: Optional[str] = None,
         embedding_dim: Optional[int] = None
@@ -36,36 +37,45 @@ class QdrantService:
         Initialize Qdrant service.
         
         Args:
-            host: Qdrant server host
-            port: Qdrant server port
+            host: Qdrant server host (for local)
+            port: Qdrant server port (for local)
+            url: Qdrant Cloud URL (takes precedence over host/port)
             collection_name: Name of the collection for face embeddings
             api_key: Optional API key for Qdrant Cloud
             embedding_dim: Dimension of face embeddings
         """
         self.host = host or settings.qdrant_host
         self.port = port or settings.qdrant_port
+        self.url = url or settings.qdrant_url
         self.collection_name = collection_name or settings.qdrant_collection_name
         self.api_key = api_key or settings.qdrant_api_key
         self.embedding_dim = embedding_dim or settings.embedding_dim
         
         # Initialize Qdrant client
         try:
-            if self.api_key:
-                # Qdrant Cloud
+            if self.url:
+                # Qdrant Cloud (URL-based connection)
+                self.client = QdrantClient(
+                    url=self.url,
+                    api_key=self.api_key
+                )
+                logger.info(f"Connected to Qdrant Cloud at {self.url}")
+            elif self.api_key:
+                # Qdrant Cloud (host-based with API key)
                 self.client = QdrantClient(
                     host=self.host,
                     port=self.port,
                     api_key=self.api_key,
                     https=True
                 )
+                logger.info(f"Connected to Qdrant at {self.host}:{self.port}")
             else:
                 # Local Qdrant
                 self.client = QdrantClient(
                     host=self.host,
                     port=self.port
                 )
-            
-            logger.info(f"Connected to Qdrant at {self.host}:{self.port}")
+                logger.info(f"Connected to local Qdrant at {self.host}:{self.port}")
             
             # Ensure collection exists
             self._ensure_collection()
@@ -75,7 +85,7 @@ class QdrantService:
             raise RuntimeError(f"Failed to initialize Qdrant service: {e}")
     
     def _ensure_collection(self) -> None:
-        """Create collection if it doesn't exist."""
+        """Create collection if it doesn't exist and ensure payload indexes."""
         try:
             collections = self.client.get_collections().collections
             collection_names = [c.name for c in collections]
@@ -91,10 +101,43 @@ class QdrantService:
                 logger.info(f"Created collection: {self.collection_name}")
             else:
                 logger.info(f"Collection already exists: {self.collection_name}")
+            
+            # Ensure payload indexes exist (required for Qdrant Cloud filtering)
+            self._ensure_payload_indexes()
                 
         except Exception as e:
             logger.error(f"Failed to ensure collection: {e}")
             raise
+    
+    def _ensure_payload_indexes(self) -> None:
+        """Create payload indexes for efficient filtering (required for Qdrant Cloud)."""
+        try:
+            # Get existing indexes
+            collection_info = self.client.get_collection(self.collection_name)
+            existing_indexes = set()
+            if collection_info.payload_schema:
+                existing_indexes = set(collection_info.payload_schema.keys())
+            
+            # Define required indexes
+            required_indexes = {
+                "type": qdrant_models.PayloadSchemaType.KEYWORD,
+                "person_id": qdrant_models.PayloadSchemaType.KEYWORD,
+                "image_id": qdrant_models.PayloadSchemaType.KEYWORD,
+            }
+            
+            # Create missing indexes
+            for field_name, field_type in required_indexes.items():
+                if field_name not in existing_indexes:
+                    self.client.create_payload_index(
+                        collection_name=self.collection_name,
+                        field_name=field_name,
+                        field_schema=field_type,
+                        wait=True
+                    )
+                    logger.info(f"Created payload index for field: {field_name}")
+                    
+        except Exception as e:
+            logger.warning(f"Failed to create payload indexes: {e}")
     
     def add_face(
         self,
@@ -352,10 +395,26 @@ class QdrantService:
         """
         try:
             info = self.client.get_collection(self.collection_name)
+            points_count = info.points_count or 0
+            
+            # Handle different API versions for vectors_count
+            vectors_count = 0
+            indexed_vectors_count = 0
+            
+            if hasattr(info, 'vectors_count') and info.vectors_count is not None:
+                vectors_count = info.vectors_count
+            else:
+                vectors_count = points_count
+                
+            if hasattr(info, 'indexed_vectors_count') and info.indexed_vectors_count is not None:
+                indexed_vectors_count = info.indexed_vectors_count
+            else:
+                indexed_vectors_count = points_count
+            
             return CollectionStats(
-                total_faces=info.points_count or 0,
-                vectors_count=info.vectors_count or 0,
-                indexed_vectors_count=info.indexed_vectors_count or 0
+                total_faces=points_count,
+                vectors_count=vectors_count,
+                indexed_vectors_count=indexed_vectors_count
             )
         except Exception as e:
             logger.error(f"Failed to get collection stats: {e}")
@@ -745,6 +804,568 @@ class QdrantService:
         except Exception as e:
             logger.error(f"Failed to get gallery stats: {e}")
             return {"total_faces": 0, "unique_images": 0}
+    
+    # ================== Saved Gallery Methods ==================
+    
+    def _get_saved_collection_name(self, gallery_name: str) -> str:
+        """Generate collection name for a saved gallery."""
+        # Sanitize name: replace spaces and special chars
+        safe_name = "".join(c if c.isalnum() else "_" for c in gallery_name.lower())
+        return f"saved_gallery_{safe_name}"
+    
+    def save_gallery(self, name: str) -> Dict[str, Any]:
+        """
+        Save the current gallery to a new collection.
+        
+        Args:
+            name: Name for the saved gallery
+            
+        Returns:
+            Dictionary with save results
+        """
+        saved_collection = self._get_saved_collection_name(name)
+        
+        try:
+            # Check if saved collection already exists
+            collections = self.client.get_collections().collections
+            collection_names = [c.name for c in collections]
+            
+            if saved_collection in collection_names:
+                # Delete existing saved collection
+                self.client.delete_collection(saved_collection)
+                logger.info(f"Deleted existing saved collection: {saved_collection}")
+            
+            # Create new collection for saved gallery
+            self.client.create_collection(
+                collection_name=saved_collection,
+                vectors_config=qdrant_models.VectorParams(
+                    size=self.embedding_dim,
+                    distance=qdrant_models.Distance.COSINE
+                )
+            )
+            
+            # Copy all gallery entries to saved collection
+            offset = None
+            total_copied = 0
+            unique_images = set()
+            batch_size = 100
+            
+            while True:
+                results, next_offset = self.client.scroll(
+                    collection_name=self.collection_name,
+                    scroll_filter=qdrant_models.Filter(
+                        must=[
+                            qdrant_models.FieldCondition(
+                                key="type",
+                                match=qdrant_models.MatchValue(value="gallery")
+                            )
+                        ]
+                    ),
+                    limit=batch_size,
+                    offset=offset,
+                    with_payload=True,
+                    with_vectors=True
+                )
+                
+                if not results:
+                    break
+                
+                # Prepare points for upsert
+                points = []
+                for point in results:
+                    # Add metadata about save
+                    payload = dict(point.payload) if point.payload else {}
+                    payload["saved_at"] = datetime.utcnow().isoformat()
+                    payload["original_gallery"] = name
+                    
+                    if payload.get("image_id"):
+                        unique_images.add(payload["image_id"])
+                    
+                    points.append(qdrant_models.PointStruct(
+                        id=str(point.id),
+                        vector=point.vector if isinstance(point.vector, list) else list(point.vector),
+                        payload=payload
+                    ))
+                
+                if points:
+                    self.client.upsert(
+                        collection_name=saved_collection,
+                        points=points,
+                        wait=True
+                    )
+                    total_copied += len(points)
+                
+                if next_offset is None:
+                    break
+                offset = next_offset
+            
+            logger.info(f"Saved gallery '{name}': {total_copied} faces, {len(unique_images)} images")
+            
+            return {
+                "success": True,
+                "name": name,
+                "faces_saved": total_copied,
+                "unique_images": len(unique_images)
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to save gallery: {e}")
+            # Cleanup on failure
+            try:
+                self.client.delete_collection(saved_collection)
+            except:
+                pass
+            raise
+    
+    def load_gallery(self, name: str, clear_current: bool = True) -> Dict[str, Any]:
+        """
+        Load a saved gallery into the main collection.
+        
+        Args:
+            name: Name of the saved gallery to load
+            clear_current: Whether to clear the current gallery first
+            
+        Returns:
+            Dictionary with load results
+        """
+        saved_collection = self._get_saved_collection_name(name)
+        
+        try:
+            # Check if saved collection exists
+            collections = self.client.get_collections().collections
+            collection_names = [c.name for c in collections]
+            
+            if saved_collection not in collection_names:
+                raise ValueError(f"Saved gallery '{name}' not found")
+            
+            # Clear current gallery if requested
+            if clear_current:
+                self.client.delete(
+                    collection_name=self.collection_name,
+                    points_selector=qdrant_models.FilterSelector(
+                        filter=qdrant_models.Filter(
+                            must=[
+                                qdrant_models.FieldCondition(
+                                    key="type",
+                                    match=qdrant_models.MatchValue(value="gallery")
+                                )
+                            ]
+                        )
+                    ),
+                    wait=True
+                )
+                logger.info("Cleared current gallery")
+            
+            # Copy from saved collection to main collection
+            offset = None
+            total_loaded = 0
+            batch_size = 100
+            
+            while True:
+                results, next_offset = self.client.scroll(
+                    collection_name=saved_collection,
+                    limit=batch_size,
+                    offset=offset,
+                    with_payload=True,
+                    with_vectors=True
+                )
+                
+                if not results:
+                    break
+                
+                # Prepare points for upsert
+                points = []
+                for point in results:
+                    payload = dict(point.payload) if point.payload else {}
+                    # Remove save metadata
+                    payload.pop("saved_at", None)
+                    payload.pop("original_gallery", None)
+                    
+                    points.append(qdrant_models.PointStruct(
+                        id=str(uuid.uuid4()),  # Generate new IDs
+                        vector=point.vector if isinstance(point.vector, list) else list(point.vector),
+                        payload=payload
+                    ))
+                
+                if points:
+                    self.client.upsert(
+                        collection_name=self.collection_name,
+                        points=points,
+                        wait=True
+                    )
+                    total_loaded += len(points)
+                
+                if next_offset is None:
+                    break
+                offset = next_offset
+            
+            logger.info(f"Loaded gallery '{name}': {total_loaded} faces")
+            
+            return {
+                "success": True,
+                "name": name,
+                "faces_loaded": total_loaded,
+                "previous_gallery_cleared": clear_current
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to load gallery: {e}")
+            raise
+    
+    def save_gallery_streaming(self, name: str) -> Generator[Dict[str, Any], None, None]:
+        """
+        Save the current gallery to a new collection with progress updates.
+        
+        Yields:
+            Progress updates as dictionaries
+        """
+        saved_collection = self._get_saved_collection_name(name)
+        
+        try:
+            yield {"status": "starting", "message": "Preparing to save...", "progress": 0}
+            
+            # Get total count first
+            gallery_stats = self.get_gallery_stats()
+            total_faces = gallery_stats["total_faces"]
+            
+            if total_faces == 0:
+                yield {"status": "error", "message": "No faces in current gallery to save", "progress": 0}
+                return
+            
+            yield {"status": "progress", "message": f"Found {total_faces} faces to save", "progress": 5, "total": total_faces}
+            
+            # Check if saved collection already exists
+            collections = self.client.get_collections().collections
+            collection_names = [c.name for c in collections]
+            
+            if saved_collection in collection_names:
+                yield {"status": "progress", "message": "Removing existing album...", "progress": 8}
+                self.client.delete_collection(saved_collection)
+            
+            # Create new collection for saved gallery
+            yield {"status": "progress", "message": "Creating album...", "progress": 10}
+            self.client.create_collection(
+                collection_name=saved_collection,
+                vectors_config=qdrant_models.VectorParams(
+                    size=self.embedding_dim,
+                    distance=qdrant_models.Distance.COSINE
+                )
+            )
+            
+            # Copy all gallery entries to saved collection
+            offset = None
+            total_copied = 0
+            unique_images = set()
+            batch_size = 100
+            
+            while True:
+                results, next_offset = self.client.scroll(
+                    collection_name=self.collection_name,
+                    scroll_filter=qdrant_models.Filter(
+                        must=[
+                            qdrant_models.FieldCondition(
+                                key="type",
+                                match=qdrant_models.MatchValue(value="gallery")
+                            )
+                        ]
+                    ),
+                    limit=batch_size,
+                    offset=offset,
+                    with_payload=True,
+                    with_vectors=True
+                )
+                
+                if not results:
+                    break
+                
+                # Prepare points for upsert
+                points = []
+                for point in results:
+                    payload = dict(point.payload) if point.payload else {}
+                    payload["saved_at"] = datetime.utcnow().isoformat()
+                    payload["original_gallery"] = name
+                    
+                    if payload.get("image_id"):
+                        unique_images.add(payload["image_id"])
+                    
+                    points.append(qdrant_models.PointStruct(
+                        id=str(point.id),
+                        vector=point.vector if isinstance(point.vector, list) else list(point.vector),
+                        payload=payload
+                    ))
+                
+                if points:
+                    self.client.upsert(
+                        collection_name=saved_collection,
+                        points=points,
+                        wait=True
+                    )
+                    total_copied += len(points)
+                    
+                    # Calculate progress (10-95% range for copying)
+                    progress = 10 + int((total_copied / total_faces) * 85)
+                    yield {
+                        "status": "progress",
+                        "message": f"Saving faces... ({total_copied}/{total_faces})",
+                        "progress": min(progress, 95),
+                        "copied": total_copied,
+                        "total": total_faces
+                    }
+                
+                if next_offset is None:
+                    break
+                offset = next_offset
+            
+            logger.info(f"Saved gallery '{name}': {total_copied} faces, {len(unique_images)} images")
+            
+            yield {
+                "status": "complete",
+                "message": f"Album saved successfully!",
+                "progress": 100,
+                "name": name,
+                "faces_saved": total_copied,
+                "unique_images": len(unique_images)
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to save gallery: {e}")
+            # Cleanup on failure
+            try:
+                self.client.delete_collection(saved_collection)
+            except:
+                pass
+            yield {"status": "error", "message": str(e), "progress": 0}
+    
+    def load_gallery_streaming(self, name: str, clear_current: bool = True) -> Generator[Dict[str, Any], None, None]:
+        """
+        Load a saved gallery with progress updates.
+        
+        Yields:
+            Progress updates as dictionaries
+        """
+        saved_collection = self._get_saved_collection_name(name)
+        
+        try:
+            yield {"status": "starting", "message": "Preparing to load...", "progress": 0}
+            
+            # Check if saved collection exists
+            collections = self.client.get_collections().collections
+            collection_names = [c.name for c in collections]
+            
+            if saved_collection not in collection_names:
+                yield {"status": "error", "message": f"Album '{name}' not found", "progress": 0}
+                return
+            
+            # Get total count from saved collection
+            info = self.client.get_collection(saved_collection)
+            total_faces = info.points_count or 0
+            
+            if total_faces == 0:
+                yield {"status": "error", "message": "Saved album is empty", "progress": 0}
+                return
+            
+            yield {"status": "progress", "message": f"Found {total_faces} faces to load", "progress": 5, "total": total_faces}
+            
+            # Clear current gallery if requested
+            if clear_current:
+                yield {"status": "progress", "message": "Clearing current gallery...", "progress": 10}
+                self.client.delete(
+                    collection_name=self.collection_name,
+                    points_selector=qdrant_models.FilterSelector(
+                        filter=qdrant_models.Filter(
+                            must=[
+                                qdrant_models.FieldCondition(
+                                    key="type",
+                                    match=qdrant_models.MatchValue(value="gallery")
+                                )
+                            ]
+                        )
+                    ),
+                    wait=True
+                )
+            
+            # Copy from saved collection to main collection
+            offset = None
+            total_loaded = 0
+            batch_size = 100
+            
+            while True:
+                results, next_offset = self.client.scroll(
+                    collection_name=saved_collection,
+                    limit=batch_size,
+                    offset=offset,
+                    with_payload=True,
+                    with_vectors=True
+                )
+                
+                if not results:
+                    break
+                
+                # Prepare points for upsert
+                points = []
+                for point in results:
+                    payload = dict(point.payload) if point.payload else {}
+                    payload.pop("saved_at", None)
+                    payload.pop("original_gallery", None)
+                    
+                    points.append(qdrant_models.PointStruct(
+                        id=str(uuid.uuid4()),
+                        vector=point.vector if isinstance(point.vector, list) else list(point.vector),
+                        payload=payload
+                    ))
+                
+                if points:
+                    self.client.upsert(
+                        collection_name=self.collection_name,
+                        points=points,
+                        wait=True
+                    )
+                    total_loaded += len(points)
+                    
+                    # Calculate progress (15-95% range for loading)
+                    progress = 15 + int((total_loaded / total_faces) * 80)
+                    yield {
+                        "status": "progress",
+                        "message": f"Loading faces... ({total_loaded}/{total_faces})",
+                        "progress": min(progress, 95),
+                        "loaded": total_loaded,
+                        "total": total_faces
+                    }
+                
+                if next_offset is None:
+                    break
+                offset = next_offset
+            
+            logger.info(f"Loaded gallery '{name}': {total_loaded} faces")
+            
+            yield {
+                "status": "complete",
+                "message": f"Album loaded successfully!",
+                "progress": 100,
+                "name": name,
+                "faces_loaded": total_loaded,
+                "previous_gallery_cleared": clear_current
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to load gallery: {e}")
+            yield {"status": "error", "message": str(e), "progress": 0}
+    
+    def list_saved_galleries(self) -> List[Dict[str, Any]]:
+        """
+        List all saved galleries.
+        
+        Returns:
+            List of saved gallery information
+        """
+        try:
+            collections = self.client.get_collections().collections
+            saved_galleries = []
+            
+            for collection in collections:
+                if collection.name.startswith("saved_gallery_"):
+                    # Extract gallery name
+                    gallery_name = collection.name[14:]  # Remove "saved_gallery_" prefix
+                    
+                    # Get collection stats
+                    try:
+                        info = self.client.get_collection(collection.name)
+                        points_count = info.points_count or 0
+                        
+                        # Get sample point to get created_at
+                        created_at = ""
+                        unique_images = 0
+                        
+                        sample, _ = self.client.scroll(
+                            collection_name=collection.name,
+                            limit=1000,
+                            with_payload=["saved_at", "image_id"],
+                            with_vectors=False
+                        )
+                        
+                        if sample:
+                            created_at = sample[0].payload.get("saved_at", "") if sample[0].payload else ""
+                            unique_images = len(set(
+                                p.payload.get("image_id", "") for p in sample if p.payload
+                            ))
+                        
+                        saved_galleries.append({
+                            "name": gallery_name,
+                            "created_at": created_at,
+                            "total_faces": points_count,
+                            "unique_images": unique_images
+                        })
+                    except Exception as e:
+                        logger.warning(f"Failed to get stats for {collection.name}: {e}")
+            
+            return saved_galleries
+            
+        except Exception as e:
+            logger.error(f"Failed to list saved galleries: {e}")
+            return []
+    
+    def delete_saved_gallery(self, name: str) -> bool:
+        """
+        Delete a saved gallery.
+        
+        Args:
+            name: Name of the saved gallery to delete
+            
+        Returns:
+            True if deleted successfully
+        """
+        saved_collection = self._get_saved_collection_name(name)
+        
+        try:
+            self.client.delete_collection(saved_collection)
+            logger.info(f"Deleted saved gallery: {name}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to delete saved gallery: {e}")
+            return False
+    
+    def clear_gallery(self) -> int:
+        """
+        Clear all gallery entries from main collection.
+        
+        Returns:
+            Number of deleted entries
+        """
+        try:
+            count_result = self.client.count(
+                collection_name=self.collection_name,
+                count_filter=qdrant_models.Filter(
+                    must=[
+                        qdrant_models.FieldCondition(
+                            key="type",
+                            match=qdrant_models.MatchValue(value="gallery")
+                        )
+                    ]
+                )
+            )
+            
+            self.client.delete(
+                collection_name=self.collection_name,
+                points_selector=qdrant_models.FilterSelector(
+                    filter=qdrant_models.Filter(
+                        must=[
+                            qdrant_models.FieldCondition(
+                                key="type",
+                                match=qdrant_models.MatchValue(value="gallery")
+                            )
+                        ]
+                    )
+                ),
+                wait=True
+            )
+            
+            deleted_count = count_result.count
+            logger.info(f"Cleared {deleted_count} gallery entries")
+            return deleted_count
+            
+        except Exception as e:
+            logger.error(f"Failed to clear gallery: {e}")
+            raise
 
 
 # Singleton instance

@@ -47,11 +47,15 @@ class Settings(BaseSettings):
     # Qdrant Settings
     qdrant_host: str = Field(
         default="localhost",
-        description="Qdrant server host"
+        description="Qdrant server host (ignored if qdrant_url is set)"
     )
     qdrant_port: int = Field(
         default=6333,
-        description="Qdrant server port"
+        description="Qdrant server port (ignored if qdrant_url is set)"
+    )
+    qdrant_url: Optional[str] = Field(
+        default=None,
+        description="Qdrant Cloud URL (e.g., https://xxx.cloud.qdrant.io:6333)"
     )
     qdrant_collection_name: str = Field(
         default="face_embeddings",
@@ -59,7 +63,7 @@ class Settings(BaseSettings):
     )
     qdrant_api_key: Optional[str] = Field(
         default=None,
-        description="Qdrant API key (optional)"
+        description="Qdrant API key (required for Qdrant Cloud)"
     )
     
     # Search Settings

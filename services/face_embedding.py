@@ -41,12 +41,18 @@ class FaceEmbeddingService:
         
         # Initialize ONNX Runtime session
         try:
-            providers = ['CUDAExecutionProvider'] if self.use_gpu else ['CPUExecutionProvider']
-            
-            # Fall back to CPU if GPU is requested but not available
             available_providers = onnxruntime.get_available_providers()
-            if self.use_gpu and 'CUDAExecutionProvider' not in available_providers:
-                logger.warning("CUDA not available, falling back to CPU")
+            
+            if self.use_gpu:
+                # Try GPU providers in order of preference
+                if 'CUDAExecutionProvider' in available_providers:
+                    providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
+                elif 'DmlExecutionProvider' in available_providers:
+                    providers = ['DmlExecutionProvider', 'CPUExecutionProvider']
+                else:
+                    logger.warning("No GPU provider available, falling back to CPU")
+                    providers = ['CPUExecutionProvider']
+            else:
                 providers = ['CPUExecutionProvider']
             
             self.session = onnxruntime.InferenceSession(

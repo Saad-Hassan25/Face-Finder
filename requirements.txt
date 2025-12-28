@@ -7,9 +7,11 @@ python-multipart>=0.0.6
 scrfd>=0.2.0
 
 # Face Recognition - LVFace (ONNX)
-# Use onnxruntime-gpu for GPU acceleration, or onnxruntime for CPU-only
-onnxruntime>=1.19.0
-# onnxruntime-gpu>=1.19.0  # Uncomment for GPU support (requires CUDA)
+# Choose ONE of the following based on your system:
+# - onnxruntime>=1.19.0           # CPU-only
+# - onnxruntime-gpu>=1.19.0       # NVIDIA GPU (requires CUDA 12.x)
+# - onnxruntime-directml>=1.19.0  # Windows GPU (DirectX 12, works with any GPU)
+onnxruntime-gpu>=1.19.0  # NVIDIA CUDA GPU support
 
 # Vector Database - Qdrant
 qdrant-client>=1.7.0

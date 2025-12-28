@@ -6,6 +6,7 @@ import {
   GalleryPage,
   SearchPage,
   VerifyPage,
+  AlbumsPage,
   SettingsPage,
 } from './pages';
 
@@ -21,6 +22,7 @@ function App() {
             <Route path="/gallery" element={<GalleryPage />} />
             <Route path="/search" element={<SearchPage />} />
             <Route path="/verify" element={<VerifyPage />} />
+            <Route path="/albums" element={<AlbumsPage />} />
             <Route path="/settings" element={<SettingsPage />} />
           </Routes>
         </main>
