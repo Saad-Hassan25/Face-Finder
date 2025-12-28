@@ -1,46 +1,150 @@
 # Face Finder
 
-A face detection, recognition, and search API using state-of-the-art models.
+A powerful face detection, recognition, and search application that helps you find yourself (or anyone) in large photo collections. Built with state-of-the-art AI models and a modern web interface.
 
-## Features
+## 🎯 What It Does
 
-- **Face Detection**: SCRFD (Sample and Computation Redistribution for Face Detection)
-- **Face Embeddings**: LVFace (Large Vision Face - ICCV 2025 Highlight)
-- **Vector Search**: Qdrant for efficient similarity search
-- **REST API**: FastAPI for high-performance API endpoints
+- **Index Photo Collections**: Process folders of images to detect and index all faces
+- **Find People in Photos**: Upload a selfie and find all photos containing that person
+- **Face Verification**: Compare two photos to check if they're the same person
+- **Album Management**: Save indexed galleries as albums to switch between events/collections
+- **Real-time Progress**: Live progress tracking for all long-running operations
 
-## Architecture
+## ✨ Features
+
+| Feature | Description |
+|---------|-------------|
+| 🔍 **Face Detection** | SCRFD model - fast and accurate face detection with keypoint alignment |
+| 🧠 **Face Recognition** | LVFace (ICCV 2025) - state-of-the-art face embeddings using Vision Transformer |
+| 🗄️ **Vector Search** | Qdrant - efficient similarity search across millions of faces |
+| ⚡ **GPU Acceleration** | CUDA/DirectML support for fast inference on NVIDIA/AMD GPUs |
+| 💾 **Album System** | Save/load indexed galleries without reprocessing |
+| 🌐 **Modern UI** | React + TypeScript frontend with real-time progress bars |
+
+## 🏗️ Architecture
 
 ```
-┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
-│   Client        │────▶│   FastAPI        │────▶│   SCRFD         │
-│   (HTTP)        │     │   Server         │     │   Detection     │
-└─────────────────┘     └──────────────────┘     └─────────────────┘
-                               │                         │
-                               │                         ▼
-                               │                 ┌─────────────────┐
-                               │                 │   LVFace        │
-                               │                 │   Embeddings    │
-                               │                 └─────────────────┘
-                               │                         │
-                               ▼                         ▼
-                        ┌──────────────────────────────────────┐
-                        │              Qdrant                   │
-                        │         Vector Database               │
-                        └──────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              FRONTEND (React + Vite)                         │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐       │
+│  │  Upload  │  │  Search  │  │  Verify  │  │  Albums  │  │ Settings │       │
+│  │   Page   │  │   Page   │  │   Page   │  │   Page   │  │   Page   │       │
+│  └────┬─────┘  └────┬─────┘  └────┬─────┘  └────┬─────┘  └────┬─────┘       │
+│       └─────────────┴─────────────┴─────────────┴─────────────┘             │
+│                                    │                                         │
+│                              REST API / SSE                                  │
+└────────────────────────────────────┼─────────────────────────────────────────┘
+                                     │
+┌────────────────────────────────────┼─────────────────────────────────────────┐
+│                          BACKEND (FastAPI)                                   │
+│                                    │                                         │
+│  ┌─────────────────────────────────┴─────────────────────────────────────┐  │
+│  │                           API Endpoints                                │  │
+│  │  • /gallery/index-folder (SSE)  • /gallery/find-person               │  │
+│  │  • /gallery/save/stream (SSE)   • /gallery/load/{name}/stream (SSE)  │  │
+│  │  • /detect  • /verify  • /health  • /stats                           │  │
+│  └───────┬──────────────────────┬──────────────────────┬─────────────────┘  │
+│          │                      │                      │                     │
+│  ┌───────▼───────┐    ┌────────▼────────┐    ┌────────▼────────┐           │
+│  │     SCRFD     │    │     LVFace      │    │  Qdrant Service │           │
+│  │  (Detection)  │    │  (Embeddings)   │    │ (Vector Search) │           │
+│  │               │    │                 │    │                 │           │
+│  │  • 10G model  │    │  • 512-dim      │    │  • CRUD ops     │           │
+│  │  • Keypoints  │    │  • ViT arch     │    │  • Similarity   │           │
+│  │  • Alignment  │    │  • GPU accel    │    │  • Filtering    │           │
+│  └───────────────┘    └─────────────────┘    └────────┬────────┘           │
+│                                                        │                     │
+└────────────────────────────────────────────────────────┼─────────────────────┘
+                                                         │
+                              ┌───────────────────────────┴───────────────────┐
+                              │              Qdrant Vector Database            │
+                              │                                                │
+                              │  Collections:                                  │
+                              │  • face_embeddings (main gallery)             │
+                              │  • saved_gallery_* (saved albums)             │
+                              │                                                │
+                              │  Indexes: type, person_id, image_id           │
+                              └────────────────────────────────────────────────┘
 ```
 
-## Quick Start
+## 🔄 How It Works
 
-### 1. Install Dependencies
+### 1. Indexing Images
 
-```bash
+```
+┌──────────┐    ┌──────────────┐    ┌──────────────┐    ┌─────────────┐
+│  Image   │───▶│ Face Detect  │───▶│   Align &    │───▶│  Generate   │
+│  File    │    │   (SCRFD)    │    │    Crop      │    │  Embedding  │
+└──────────┘    └──────────────┘    └──────────────┘    └──────┬──────┘
+                      │                                        │
+                      ▼                                        ▼
+               ┌──────────────┐                         ┌─────────────┐
+               │  Bounding    │                         │  512-dim    │
+               │  Boxes +     │                         │  Vector     │
+               │  Keypoints   │                         │  (LVFace)   │
+               └──────────────┘                         └──────┬──────┘
+                                                               │
+                                                               ▼
+                                                        ┌─────────────┐
+                                                        │   Store in  │
+                                                        │   Qdrant    │
+                                                        └─────────────┘
+```
+
+### 2. Finding a Person
+
+```
+┌──────────┐    ┌──────────────┐    ┌──────────────┐    ┌─────────────┐
+│  Query   │───▶│ Face Detect  │───▶│  Generate    │───▶│  Similarity │
+│  Photo   │    │  & Align     │    │  Embedding   │    │   Search    │
+└──────────┘    └──────────────┘    └──────────────┘    └──────┬──────┘
+                                                               │
+                                                               ▼
+                                                        ┌─────────────┐
+                                                        │  Top-K      │
+                                                        │  Matches    │
+                                                        │  (Images)   │
+                                                        └─────────────┘
+```
+
+### 3. Album System
+
+```
+┌─────────────────┐         ┌─────────────────┐
+│  Main Gallery   │◀───────▶│  Saved Albums   │
+│                 │  Save/  │                 │
+│  face_embeddings│  Load   │  saved_gallery_ │
+│  collection     │         │  * collections  │
+└─────────────────┘         └─────────────────┘
+```
+
+- **Save**: Copies all gallery entries to a named collection
+- **Load**: Clears main gallery, restores from saved collection
+- **Switch**: Easily switch between Wedding, Birthday, Conference, etc.
+
+## 🚀 Quick Start
+
+### Prerequisites
+
+- Python 3.9+
+- Node.js 18+ (for frontend)
+- NVIDIA GPU with CUDA 11.8/12.x (optional, for GPU acceleration)
+- Qdrant server (local Docker or Qdrant Cloud)
+
+### 1. Clone & Setup Python Environment
+
+```powershell
+# Create virtual environment
+python -m venv faceFinder
+.\faceFinder\Scripts\Activate.ps1
+
+# Install dependencies
 pip install -r requirements.txt
 ```
 
-### 2. Download Models
+### 2. Download AI Models
 
-```bash
+```powershell
 # Download default models (SCRFD + LVFace-T)
 python download_models.py
 
@@ -51,205 +155,249 @@ python download_models.py --models scrfd lvface-b
 python download_models.py --list
 ```
 
-### 3. Start Qdrant
+### 3. Setup Qdrant Database
 
-Using Docker:
-```bash
+**Option A: Local Docker**
+```powershell
 docker run -p 6333:6333 -p 6334:6334 qdrant/qdrant
 ```
 
-Or install locally - see [Qdrant Installation Guide](https://qdrant.tech/documentation/guides/installation/)
+**Option B: Qdrant Cloud** (Recommended for production)
+1. Create account at [cloud.qdrant.io](https://cloud.qdrant.io)
+2. Create a cluster and get your URL + API key
 
 ### 4. Configure Environment
 
-```bash
+```powershell
+# Copy example config
 cp .env.example .env
-# Edit .env with your settings
 ```
 
-### 5. Start the API
+Edit `.env` with your settings:
+```env
+# Qdrant Cloud (recommended)
+QDRANT_URL=https://your-cluster.cloud.qdrant.io:6333
+QDRANT_API_KEY=your-api-key
 
-```bash
+# Or Local Qdrant
+QDRANT_HOST=localhost
+QDRANT_PORT=6333
+
+# GPU Settings
+USE_GPU=true
+```
+
+### 5. Start Backend
+
+```powershell
+# Activate environment first
+.\faceFinder\Scripts\Activate.ps1
+
+# Start FastAPI server
 python main.py
 ```
 
-Or with uvicorn directly:
-```bash
-uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+Backend runs at: http://localhost:8000
+
+### 6. Start Frontend
+
+```powershell
+# In a new terminal
+cd frontEnd
+
+# Install dependencies (first time only)
+npm install
+
+# Start development server
+npm run dev
 ```
 
-## API Endpoints
+Frontend runs at: http://localhost:5173
 
-### Health & Status
+## 📱 Using the Application
+
+### Upload Page
+1. Enter a folder path containing your photos
+2. Click "Index Folder" 
+3. Watch the progress bar as faces are detected and indexed
+4. See stats: total images processed, faces found
+
+### Search Page
+1. Upload a photo of the person you want to find
+2. Adjust similarity threshold (default 0.6)
+3. Click "Find Person"
+4. Browse through all matching photos with similarity scores
+
+### Albums Page
+1. **Save Current Gallery**: Give it a name (e.g., "Wedding 2024")
+2. **Load Album**: Restore a previously saved album
+3. **Clear Gallery**: Remove current indexed faces (albums are preserved)
+
+### Verify Page
+1. Upload two photos
+2. See if they're the same person with confidence score
+
+### Settings Page
+1. View system health status
+2. Check component connectivity (Qdrant, models)
+3. Access API documentation
+4. Clear all data (danger zone)
+
+## 🔌 API Reference
+
+### Gallery Operations
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/` | GET | API information |
-| `/health` | GET | Health check for all components |
-| `/stats` | GET | Database statistics |
+| `/gallery/index` | POST | Index a single image |
+| `/gallery/index-bulk` | POST | Index multiple images |
+| `/gallery/index-folder` | POST | Index folder with progress (SSE) |
+| `/gallery/find-person` | POST | Find person in indexed gallery |
+| `/gallery/stats` | GET | Get gallery statistics |
+| `/gallery/clear` | DELETE | Clear current gallery |
+
+### Album Operations
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/gallery/save/stream` | POST | Save gallery with progress (SSE) |
+| `/gallery/load/{name}/stream` | POST | Load album with progress (SSE) |
+| `/gallery/saved` | GET | List all saved albums |
+| `/gallery/saved/{name}` | DELETE | Delete a saved album |
 
 ### Face Operations
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/detect` | POST | Detect faces in an image |
-| `/embed` | POST | Extract face embeddings from an image |
-| `/register` | POST | Register a face in the database |
-| `/search` | POST | Search for matching faces |
-| `/verify` | POST | Verify if two images are the same person |
+| `/detect` | POST | Detect faces in image |
+| `/verify` | POST | Compare two faces |
+| `/embed` | POST | Get face embeddings |
 
-### Management
+### System
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/person/{person_id}` | DELETE | Delete all faces for a person |
-| `/face/{face_id}` | DELETE | Delete a specific face |
-| `/collection` | DELETE | Clear all faces (use with caution!) |
+| `/health` | GET | Health check |
+| `/stats` | GET | Database statistics |
+| `/docs` | GET | Swagger API docs |
 
-## API Documentation
-
-Once the server is running, access the interactive API documentation:
-
-- **Swagger UI**: http://localhost:8000/docs
-- **ReDoc**: http://localhost:8000/redoc
-
-## Usage Examples
-
-### Python Client
-
-```python
-import requests
-
-BASE_URL = "http://localhost:8000"
-
-# Register a face
-with open("person1.jpg", "rb") as f:
-    response = requests.post(
-        f"{BASE_URL}/register",
-        files={"file": f},
-        data={"person_id": "john_doe", "person_name": "John Doe"}
-    )
-print(response.json())
-
-# Search for a face
-with open("query.jpg", "rb") as f:
-    response = requests.post(
-        f"{BASE_URL}/search",
-        files={"file": f},
-        params={"limit": 5, "threshold": 0.6}
-    )
-print(response.json())
-
-# Verify two faces
-with open("image1.jpg", "rb") as f1, open("image2.jpg", "rb") as f2:
-    response = requests.post(
-        f"{BASE_URL}/verify",
-        files={"file1": f1, "file2": f2},
-        params={"threshold": 0.6}
-    )
-print(response.json())
-```
-
-### cURL Examples
-
-```bash
-# Detect faces
-curl -X POST "http://localhost:8000/detect" \
-  -H "accept: application/json" \
-  -F "file=@image.jpg"
-
-# Register a face
-curl -X POST "http://localhost:8000/register" \
-  -H "accept: application/json" \
-  -F "file=@person.jpg" \
-  -F "person_id=john_doe" \
-  -F "person_name=John Doe"
-
-# Search faces
-curl -X POST "http://localhost:8000/search" \
-  -H "accept: application/json" \
-  -F "file=@query.jpg"
-```
-
-## Configuration
-
-Environment variables (can be set in `.env` file):
+## ⚙️ Configuration
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `API_HOST` | `0.0.0.0` | API server host |
 | `API_PORT` | `8000` | API server port |
-| `SCRFD_MODEL_PATH` | `models/scrfd.onnx` | Path to SCRFD model |
-| `DETECTION_THRESHOLD` | `0.5` | Face detection confidence threshold |
-| `LVFACE_MODEL_PATH` | `models/lvface.onnx` | Path to LVFace model |
-| `USE_GPU` | `true` | Use GPU for inference |
+| `SCRFD_MODEL_PATH` | `models/scrfd.onnx` | SCRFD model path |
+| `DETECTION_THRESHOLD` | `0.5` | Face detection confidence |
+| `LVFACE_MODEL_PATH` | `models/lvface.onnx` | LVFace model path |
+| `USE_GPU` | `true` | Enable GPU acceleration |
 | `EMBEDDING_DIM` | `512` | Face embedding dimension |
-| `QDRANT_HOST` | `localhost` | Qdrant server host |
-| `QDRANT_PORT` | `6333` | Qdrant server port |
-| `QDRANT_COLLECTION_NAME` | `face_embeddings` | Qdrant collection name |
-| `SIMILARITY_THRESHOLD` | `0.6` | Minimum similarity for matching |
+| `QDRANT_HOST` | `localhost` | Qdrant host (local) |
+| `QDRANT_PORT` | `6333` | Qdrant port (local) |
+| `QDRANT_URL` | - | Qdrant Cloud URL |
+| `QDRANT_API_KEY` | - | Qdrant API key |
+| `QDRANT_COLLECTION_NAME` | `face_embeddings` | Main collection name |
+| `SIMILARITY_THRESHOLD` | `0.6` | Match threshold (0-1) |
 
-## Models
-
-### SCRFD (Face Detection)
-
-SCRFD is an efficient and accurate face detection model. We use the 10G variant with keypoint detection for face alignment.
-
-- [SCRFD GitHub](https://github.com/cospectrum/scrfd)
-- Model: `scrfd_10g_bnkps.onnx`
-
-### LVFace (Face Recognition)
-
-LVFace (ICCV 2025 Highlight) provides state-of-the-art face recognition using Vision Transformer architecture.
-
-- [LVFace GitHub](https://github.com/bytedance/LVFace)
-- Available variants:
-  - **LVFace-T** (Tiny): Fastest, good accuracy
-  - **LVFace-S** (Small): Balanced speed/accuracy
-  - **LVFace-B** (Base): Best accuracy
-
-### Qdrant (Vector Database)
-
-Qdrant is a high-performance vector similarity search engine optimized for filtering and neural network matching.
-
-- [Qdrant Documentation](https://qdrant.tech/documentation/)
-
-## Project Structure
+## 📁 Project Structure
 
 ```
-Face Finder/
-├── main.py                 # FastAPI application
-├── config.py               # Configuration settings
-├── models.py               # Pydantic data models
-├── requirements.txt        # Python dependencies
-├── download_models.py      # Model download script
-├── .env.example            # Environment template
-├── README.md               # This file
-├── models/                 # Model files (created by download_models.py)
+Face-Finder/
+├── main.py                    # FastAPI application & endpoints
+├── config.py                  # Configuration (Pydantic settings)
+├── models.py                  # Data models (request/response)
+├── requirements.txt           # Python dependencies
+├── download_models.py         # Model download utility
+├── .env                       # Environment configuration
+│
+├── services/
+│   ├── face_detection.py      # SCRFD face detection
+│   ├── face_embedding.py      # LVFace embeddings (GPU/CPU)
+│   └── qdrant_service.py      # Vector DB operations & albums
+│
+├── frontEnd/
+│   ├── src/
+│   │   ├── App.tsx            # Main app with routing
+│   │   ├── pages/
+│   │   │   ├── UploadPage.tsx # Folder indexing with progress
+│   │   │   ├── SearchPage.tsx # Find person in photos
+│   │   │   ├── AlbumsPage.tsx # Save/load gallery albums
+│   │   │   ├── VerifyPage.tsx # Face verification
+│   │   │   └── SettingsPage.tsx # System health & config
+│   │   ├── components/
+│   │   │   ├── Navbar.tsx     # Navigation sidebar
+│   │   │   ├── ResultsGrid.tsx # Photo results display
+│   │   │   └── LoadingSpinner.tsx
+│   │   └── services/
+│   │       └── api.ts         # API client with SSE support
+│   ├── package.json
+│   └── vite.config.ts         # Vite config with API proxy
+│
+├── models/                    # AI model files (auto-downloaded)
 │   ├── scrfd.onnx
 │   └── lvface.onnx
-└── services/
-    ├── __init__.py
-    ├── face_detection.py   # SCRFD face detection service
-    ├── face_embedding.py   # LVFace embedding service
-    └── qdrant_service.py   # Qdrant vector database service
+│
+└── faceFinder/                # Python virtual environment
 ```
 
-## Requirements
+## 🖥️ GPU Support
 
-- Python 3.9+
-- CUDA-capable GPU (optional, for faster inference)
-- Qdrant server (local or cloud)
+The application supports GPU acceleration for faster face detection and embedding generation.
 
-## License
+### NVIDIA CUDA
+```powershell
+# Requires CUDA 11.8 or 12.x
+pip install onnxruntime-gpu
 
-- Code: MIT License
-- SCRFD Model: [InsightFace License](https://github.com/deepinsight/insightface)
-- LVFace Model: MIT License (non-commercial research only)
+# Verify CUDA is available
+python -c "import onnxruntime; print(onnxruntime.get_available_providers())"
+# Should show: ['CUDAExecutionProvider', 'CPUExecutionProvider']
+```
 
-## Acknowledgments
+### AMD/Intel (DirectML)
+```powershell
+pip install onnxruntime-directml
 
-- [SCRFD](https://github.com/cospectrum/scrfd) - Face detection
-- [LVFace](https://github.com/bytedance/LVFace) - Face recognition (ByteDance)
-- [Qdrant](https://qdrant.tech/) - Vector database
-- [FastAPI](https://fastapi.tiangolo.com/) - Web framework
+# Works with DirectX 12 compatible GPUs
+```
+
+The application automatically selects the best available provider:
+1. CUDAExecutionProvider (NVIDIA)
+2. DmlExecutionProvider (DirectML)
+3. CPUExecutionProvider (fallback)
+
+## 🔧 Troubleshooting
+
+### "Qdrant connection failed"
+- Ensure Qdrant is running: `docker ps`
+- Check QDRANT_URL/QDRANT_HOST settings
+- Verify API key for Qdrant Cloud
+
+### "No faces detected"
+- Ensure good lighting in photos
+- Try lowering `DETECTION_THRESHOLD` (default 0.5)
+- Check image isn't corrupted
+
+### "GPU not being used"
+- Verify CUDA installation: `nvidia-smi`
+- Check onnxruntime-gpu is installed
+- Set `USE_GPU=true` in .env
+
+### "Frontend can't connect to backend"
+- Backend must be running on port 8000
+- Check vite.config.ts proxy settings
+- Ensure no CORS issues (should be configured)
+
+## 📜 License
+
+- **Code**: MIT License
+- **SCRFD Model**: [InsightFace License](https://github.com/deepinsight/insightface)
+- **LVFace Model**: MIT License (non-commercial research only)
+
+## 🙏 Acknowledgments
+
+- [SCRFD](https://github.com/cospectrum/scrfd) - State-of-the-art face detection
+- [LVFace](https://github.com/bytedance/LVFace) - Vision Transformer face recognition (ByteDance)
+- [Qdrant](https://qdrant.tech/) - High-performance vector database
+- [FastAPI](https://fastapi.tiangolo.com/) - Modern Python web framework
+- [React](https://react.dev/) + [Vite](https://vitejs.dev/) - Frontend framework
