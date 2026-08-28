@@ -1,3 +1,17 @@
+<!-- Project cover -->
+<p align="center">
+  <img src="./project-cover.svg" alt="Face Finder cover" width="100%" />
+</p>
+
+> **AI face search** — A face detection, recognition, and search application for large photo collections.
+
+## Project snapshot
+
+- Index local or Google Drive photos, search by selfie, verify faces, and manage albums.
+- Includes a root-level <a href="./project-cover.svg">project-cover.svg</a>, a scalable project cover graphic for this repository.
+
+---
+
 # Face Finder
 
 A powerful face detection, recognition, and search application that helps you find yourself (or anyone) in large photo collections. Built with state-of-the-art AI models and a modern web interface.
